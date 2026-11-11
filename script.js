@@ -32,11 +32,19 @@ const searchResults = document.getElementById('searchResults');
 const searchStatus = document.getElementById('searchStatus');
 const tabLocal = document.getElementById('tabLocal');
 const tabOnline = document.getElementById('tabOnline');
+const tabFav = document.getElementById('tabFav');
 const panelLocal = document.getElementById('panelLocal');
 const panelOnline = document.getElementById('panelOnline');
+const panelFav = document.getElementById('panelFav');
 const statusHintBtn = document.getElementById('statusHintBtn');
 const libraryAddBtn = document.getElementById('libraryAddBtn');
 const scrubToggle = document.getElementById('scrubToggle');
+const favBtn = document.getElementById('favBtn');
+const favListEl = document.getElementById('favList');
+const clearDataBtn = document.getElementById('clearDataBtn');
+const exportFavBtn = document.getElementById('exportFavBtn');
+const importFavBtn = document.getElementById('importFavBtn');
+const importFavInput = document.getElementById('importFavInput');
 
 const API_BASE = 'https://music-api.gdstudio.xyz/api.php';
 // 若使用代理可改为： const API_BASE = '/api.php';
@@ -48,6 +56,403 @@ let isShuffle = false;
 let repeatMode = 0;
 let shuffledOrder = [];
 let scrubEnabled = true; // 轮盘滑动调进度开关
+let playHistory = []; // 最近播放记录
+let favorites = [];   // 收藏列表（可导出）
+
+// ========== 本地持久化（IndexedDB 歌曲 + localStorage 设置）==========
+const DB_NAME = 'ipodMusicDB';
+const DB_STORE = 'tracks';
+const SETTINGS_KEY = 'ipodSettings';
+const HISTORY_KEY = 'ipodPlayHistory';
+const FAV_KEY = 'ipodFavorites';
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(DB_STORE)) {
+        db.createObjectStore(DB_STORE, { keyPath: 'key' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function saveTracksToDB() {
+  try {
+    const db = await openDB();
+    const payload = tracks.map((t, i) => ({
+      key: i,
+      name: t.name,
+      artist: t.artist || '',
+      album: t.album || '',
+      duration: t.duration || null,
+      cover: t.cover || null,
+      isOnline: !!t.isOnline,
+      id: t.id || null,
+      source: t.source || null,
+      pic_id: t.pic_id || null,
+      // 本地文件把二进制存进 DB，下次打开可恢复
+      blob: (!t.isOnline && t.blob) ? t.blob : null
+    }));
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, 'readwrite');
+      const store = tx.objectStore(DB_STORE);
+      store.clear();
+      payload.forEach((row) => store.put(row));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+  } catch (err) {
+    console.warn('保存播放列表失败', err);
+  }
+}
+
+async function loadTracksFromDB() {
+  try {
+    const db = await openDB();
+    const rows = await new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, 'readonly');
+      const req = tx.objectStore(DB_STORE).getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+    db.close();
+    rows.sort((a, b) => a.key - b.key);
+    return rows.map((row) => {
+      const track = {
+        name: row.name,
+        artist: row.artist,
+        album: row.album,
+        duration: row.duration,
+        cover: row.cover,
+        isOnline: row.isOnline,
+        id: row.id,
+        source: row.source,
+        pic_id: row.pic_id,
+        url: null,
+        blob: row.blob || null
+      };
+      if (!track.isOnline && track.blob) {
+        track.url = URL.createObjectURL(track.blob);
+      }
+      return track;
+    });
+  } catch (err) {
+    console.warn('读取播放列表失败', err);
+    return [];
+  }
+}
+
+function saveSettings() {
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+      currentIndex,
+      isShuffle,
+      repeatMode,
+      scrubEnabled
+    }));
+  } catch (_) {}
+}
+
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (!raw) return;
+    const s = JSON.parse(raw);
+    if (typeof s.currentIndex === 'number') currentIndex = s.currentIndex;
+    if (typeof s.isShuffle === 'boolean') isShuffle = s.isShuffle;
+    if (typeof s.repeatMode === 'number') repeatMode = s.repeatMode;
+    if (typeof s.scrubEnabled === 'boolean') scrubEnabled = s.scrubEnabled;
+  } catch (_) {}
+}
+
+function saveHistory() {
+  try {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(playHistory.slice(0, 50)));
+  } catch (_) {}
+}
+
+function loadHistory() {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY);
+    if (raw) playHistory = JSON.parse(raw) || [];
+  } catch (_) {
+    playHistory = [];
+  }
+}
+
+function pushHistory(track) {
+  if (!track) return;
+  playHistory = playHistory.filter(
+    (h) => !(h.name === track.name && h.artist === track.artist && !!h.isOnline === !!track.isOnline)
+  );
+  playHistory.unshift({
+    name: track.name,
+    artist: track.artist || '',
+    isOnline: !!track.isOnline,
+    at: Date.now()
+  });
+  if (playHistory.length > 50) playHistory.length = 50;
+  saveHistory();
+}
+
+function persistAll() {
+  saveSettings();
+  saveTracksToDB();
+  saveFavorites();
+}
+
+function trackKey(t) {
+  if (!t) return '';
+  if (t.isOnline && t.id) return `online:${t.source || 'netease'}:${t.id}`;
+  return `local:${t.name || ''}|${t.artist || ''}`;
+}
+
+function saveFavorites() {
+  try {
+    localStorage.setItem(FAV_KEY, JSON.stringify(favorites));
+  } catch (_) {}
+}
+
+function loadFavorites() {
+  try {
+    const raw = localStorage.getItem(FAV_KEY);
+    favorites = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(favorites)) favorites = [];
+  } catch (_) {
+    favorites = [];
+  }
+}
+
+function isFavorite(track) {
+  if (!track) return false;
+  const k = trackKey(track);
+  return favorites.some((f) => trackKey(f) === k);
+}
+
+function toFavItem(track) {
+  return {
+    name: track.name,
+    artist: track.artist || '',
+    album: track.album || '',
+    cover: track.cover || null,
+    isOnline: !!track.isOnline,
+    id: track.id || null,
+    source: track.source || null,
+    pic_id: track.pic_id || null,
+    duration: track.duration || null
+  };
+}
+
+function updateFavButton() {
+  if (!favBtn) return;
+  const on = currentIndex >= 0 && isFavorite(tracks[currentIndex]);
+  favBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+  const outline = favBtn.querySelector('.heart-outline');
+  const filled = favBtn.querySelector('.heart-filled');
+  if (outline && filled) {
+    outline.style.display = on ? 'none' : 'block';
+    filled.style.display = on ? 'block' : 'none';
+  }
+}
+
+function toggleFavorite() {
+  if (currentIndex < 0 || !tracks[currentIndex]) {
+    flashStatus('NO TRACK');
+    return;
+  }
+  const track = tracks[currentIndex];
+  const k = trackKey(track);
+  const idx = favorites.findIndex((f) => trackKey(f) === k);
+  if (idx >= 0) {
+    favorites.splice(idx, 1);
+    flashStatus('UNLIKED');
+  } else {
+    favorites.unshift(toFavItem(track));
+    flashStatus('LIKED');
+  }
+  saveFavorites();
+  updateFavButton();
+  renderFavList();
+  haptic(12);
+}
+
+function renderFavList() {
+  if (!favListEl) return;
+  if (!favorites.length) {
+    favListEl.innerHTML = `<div class="empty-tip">还没有收藏，播放时点爱心即可添加</div>`;
+    return;
+  }
+  favListEl.innerHTML = favorites.map((t, i) => `
+    <div class="track-item fav-item" data-fav-index="${i}">
+      <div class="track-num">${i + 1}</div>
+      <div class="track-info-list">
+        <div class="track-name">${escapeHtml(t.name)}</div>
+        <div class="track-artist-list">${escapeHtml(t.artist || '未知')}${t.isOnline ? ' · 在线' : ' · 本地'}</div>
+      </div>
+      <button class="add-btn-row fav-remove" data-fav-index="${i}" title="取消收藏">♡</button>
+    </div>
+  `).join('');
+
+  favListEl.querySelectorAll('.fav-item').forEach((el) => {
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('.fav-remove')) return;
+      const i = parseInt(el.dataset.favIndex, 10);
+      playFavorite(favorites[i]);
+    });
+  });
+  favListEl.querySelectorAll('.fav-remove').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const i = parseInt(btn.dataset.favIndex, 10);
+      favorites.splice(i, 1);
+      saveFavorites();
+      renderFavList();
+      updateFavButton();
+    });
+  });
+}
+
+async function playFavorite(item) {
+  if (!item) return;
+  // 若播放列表已有，直接切到
+  const exist = tracks.findIndex((t) => trackKey(t) === trackKey(item));
+  if (exist >= 0) {
+    await loadTrack(exist);
+    audio.play().catch(() => {});
+    closeSheetPanel();
+    return;
+  }
+  // 在线收藏：加入列表再播
+  if (item.isOnline && item.id) {
+    tracks.push({
+      id: item.id,
+      name: item.name,
+      artist: item.artist,
+      album: item.album || '',
+      pic_id: item.pic_id,
+      source: item.source || 'netease',
+      isOnline: true,
+      url: null,
+      cover: item.cover || null,
+      duration: item.duration || null
+    });
+    if (isShuffle) rebuildShuffle();
+    persistAll();
+    renderPlaylist();
+    renderLibrary();
+    await loadTrack(tracks.length - 1);
+    audio.play().catch(() => {});
+    closeSheetPanel();
+    return;
+  }
+  // 本地收藏没有文件数据，无法直接播放
+  flashStatus('NEED RE-IMPORT');
+  alert('该收藏是本地歌曲，请到「本地」重新导入同名文件后再播放。');
+}
+
+function exportFavorites() {
+  const data = {
+    type: 'ipod-favorites',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    favorites
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `ipod-favorites-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  flashStatus('EXPORTED');
+}
+
+function importFavoritesFile(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const data = JSON.parse(reader.result);
+      const list = Array.isArray(data) ? data : (data.favorites || data.list || []);
+      if (!Array.isArray(list) || !list.length) {
+        alert('文件里没有可用的收藏列表');
+        return;
+      }
+      let added = 0;
+      list.forEach((item) => {
+        if (!item || !item.name) return;
+        const norm = toFavItem({
+          name: item.name,
+          artist: item.artist || '',
+          album: item.album || '',
+          cover: item.cover || null,
+          isOnline: item.isOnline !== false && !!(item.id || item.isOnline),
+          id: item.id || null,
+          source: item.source || 'netease',
+          pic_id: item.pic_id || null,
+          duration: item.duration || null
+        });
+        if (!favorites.some((f) => trackKey(f) === trackKey(norm))) {
+          favorites.push(norm);
+          added++;
+        }
+      });
+      saveFavorites();
+      renderFavList();
+      updateFavButton();
+      alert(`已导入，新增 ${added} 首（已自动跳过重复）`);
+    } catch (err) {
+      alert('导入失败：文件格式不正确');
+    }
+  };
+  reader.readAsText(file);
+}
+
+async function clearAllPlayData() {
+  if (!confirm('确定清除全部播放数据？\n包括：播放列表、本地缓存歌曲、收藏、设置与播放记录。')) return;
+  tracks.forEach((t) => {
+    if (t.url && String(t.url).startsWith('blob:')) {
+      try { URL.revokeObjectURL(t.url); } catch (_) {}
+    }
+  });
+  tracks = [];
+  currentIndex = -1;
+  isPlaying = false;
+  isShuffle = false;
+  repeatMode = 0;
+  shuffledOrder = [];
+  playHistory = [];
+  favorites = [];
+  try {
+    const db = await openDB();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(DB_STORE, 'readwrite');
+      tx.objectStore(DB_STORE).clear();
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+  } catch (_) {}
+  try {
+    localStorage.removeItem(SETTINGS_KEY);
+    localStorage.removeItem(HISTORY_KEY);
+    localStorage.removeItem(FAV_KEY);
+  } catch (_) {}
+  audio.pause();
+  audio.removeAttribute('src');
+  updatePlayIcon();
+  updateModeIcons();
+  updateFavButton();
+  updateStatusHint();
+  renderPlaylist();
+  renderLibrary();
+  renderFavList();
+  flashStatus('CLEARED');
+}
 
 function formatTime(sec) {
   if (!sec || isNaN(sec)) return '0:00';
@@ -389,6 +794,9 @@ async function loadTrack(index, opts = {}) {
 
   audio.src = track.url;
   audio.load();
+  pushHistory(track);
+  saveSettings();
+  updateFavButton();
 }
 
 function togglePlay() {
@@ -545,6 +953,7 @@ function addOnlineTrack(item) {
   renderPlaylist();
   renderLibrary();
   updateStatusHint();
+  persistAll();
 }
 
 async function playOnlineTrack(item) {
@@ -584,13 +993,27 @@ function openSheet() { sheetPanel.classList.add('show'); }
 function closeSheetPanel() { sheetPanel.classList.remove('show'); }
 
 // 事件
-tabLocal.addEventListener('click', () => {
-  tabLocal.classList.add('active'); tabOnline.classList.remove('active');
-  panelLocal.classList.add('active'); panelOnline.classList.remove('active');
-});
-tabOnline.addEventListener('click', () => {
-  tabOnline.classList.add('active'); tabLocal.classList.remove('active');
-  panelOnline.classList.add('active'); panelLocal.classList.remove('active');
+function switchTab(name) {
+  const tabs = { local: tabLocal, fav: tabFav, online: tabOnline };
+  const panels = { local: panelLocal, fav: panelFav, online: panelOnline };
+  Object.keys(tabs).forEach((k) => {
+    tabs[k]?.classList.toggle('active', k === name);
+    panels[k]?.classList.toggle('active', k === name);
+  });
+  if (name === 'fav') renderFavList();
+}
+tabLocal.addEventListener('click', () => switchTab('local'));
+tabFav?.addEventListener('click', () => switchTab('fav'));
+tabOnline.addEventListener('click', () => switchTab('online'));
+
+favBtn?.addEventListener('click', toggleFavorite);
+clearDataBtn?.addEventListener('click', clearAllPlayData);
+exportFavBtn?.addEventListener('click', exportFavorites);
+importFavBtn?.addEventListener('click', () => importFavInput?.click());
+importFavInput?.addEventListener('change', (e) => {
+  const file = e.target.files?.[0];
+  if (file) importFavoritesFile(file);
+  e.target.value = '';
 });
 
 playBtn.addEventListener('click', () => { haptic(12); togglePlay(); });
@@ -607,6 +1030,7 @@ libraryAddBtn.addEventListener('click', openSheet);
 scrubToggle.addEventListener('click', () => {
   scrubEnabled = !scrubEnabled;
   updateScrubToggle();
+  saveSettings();
   haptic(15);
 });
 
@@ -614,10 +1038,12 @@ shuffleBtn.addEventListener('click', () => {
   isShuffle = !isShuffle;
   if (isShuffle) rebuildShuffle();
   updateModeIcons();
+  saveSettings();
 });
 repeatBtn.addEventListener('click', () => {
   repeatMode = (repeatMode + 1) % 3;
   updateModeIcons();
+  saveSettings();
 });
 
 sheetPanel.addEventListener('click', (e) => {
@@ -769,7 +1195,16 @@ fileInput.addEventListener('change', async (e) => {
   for (const file of files) {
     const url = URL.createObjectURL(file);
     const name = file.name.replace(/\.[^/.]+$/, '');
-    const trackObj = { name, artist: '本地音乐', album: '', url, duration: null, cover: null, isOnline: false };
+    const trackObj = {
+      name,
+      artist: '本地音乐',
+      album: '',
+      url,
+      duration: null,
+      cover: null,
+      isOnline: false,
+      blob: file // 用于 IndexedDB 持久化
+    };
     await readMetadata(file, trackObj);
     tracks.push(trackObj);
   }
@@ -777,6 +1212,7 @@ fileInput.addEventListener('change', async (e) => {
   renderPlaylist();
   renderLibrary();
   updateStatusHint();
+  persistAll();
   if (currentIndex === -1) loadTrack(0);
   fileInput.value = '';
 });
@@ -813,13 +1249,30 @@ document.addEventListener('selectstart', (e) => {
   e.preventDefault();
 });
 
-updatePlayIcon();
-updateModeIcons();
-updateScrubToggle();
-updateStatusHint();
-applyCoverAnimClass();
-renderPlaylist();
-renderLibrary();
+async function bootstrap() {
+  loadSettings();
+  loadHistory();
+  loadFavorites();
+  const saved = await loadTracksFromDB();
+  if (saved.length) {
+    tracks = saved;
+    if (currentIndex >= tracks.length) currentIndex = tracks.length ? 0 : -1;
+    if (isShuffle) rebuildShuffle();
+  }
+  updatePlayIcon();
+  updateModeIcons();
+  updateScrubToggle();
+  updateFavButton();
+  updateStatusHint();
+  applyCoverAnimClass();
+  renderPlaylist();
+  renderLibrary();
+  renderFavList();
+  // 恢复上次播到的曲目（不自动播放，避免浏览器拦截）
+  if (currentIndex >= 0 && tracks[currentIndex]) {
+    await loadTrack(currentIndex);
+  }
+}
 
 const coverAnimSelect = document.getElementById('coverAnimSelect');
 if (coverAnimSelect) {
@@ -831,3 +1284,5 @@ if (coverAnimSelect) {
     haptic(10);
   });
 }
+
+bootstrap();
