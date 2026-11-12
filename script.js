@@ -435,15 +435,7 @@ async function clearAllPlayData() {
       try { URL.revokeObjectURL(t.url); } catch (_) {}
     }
   });
-  tracks = [];
-  currentIndex = -1;
-  isPlaying = false;
-  isShuffle = false;
-  repeatMode = 0;
-  scrubEnabled = true;
-  shuffledOrder = [];
-  playHistory = [];
-  favorites = [];
+  tracks = []; currentIndex = -1; isPlaying = false; isShuffle = false; repeatMode = 0; scrubEnabled = true; shuffledOrder = []; playHistory = []; favorites = [];
   try {
     const db = await openDB();
     await new Promise((resolve, reject) => {
@@ -759,9 +751,7 @@ async function checkAllSources() {
   const tasks = ALL_SOURCES.map(s => async () => {
     activeSet.add(s.name);
     updateProgress();
-    
     const pass = await testSourceWithRetry(s.value);
-    
     activeSet.delete(s.name);
     if (pass) {
       ok.push(s);
