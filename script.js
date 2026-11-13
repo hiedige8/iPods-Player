@@ -17,8 +17,6 @@ const musicDot = document.getElementById('musicDot');
 const centerLabel = document.getElementById('centerLabel');
 const sheetPanel = document.getElementById('sheetPanel');
 const sheetEl = sheetPanel.querySelector('.sheet');
-const screenEl = document.querySelector('.screen');
-const ipodEl = document.querySelector('.ipod');
 const playlistEl = document.getElementById('playlist');
 const libraryList = document.getElementById('libraryList');
 const fileInput = document.getElementById('fileInput');
@@ -161,18 +159,11 @@ function loadSettings() {
 }
 
 function saveHistory() {
-  try {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(playHistory.slice(0, 50)));
-  } catch (_) {}
+  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(playHistory.slice(0, 50))); } catch (_) {}
 }
 
 function loadHistory() {
-  try {
-    const raw = localStorage.getItem(HISTORY_KEY);
-    if (raw) playHistory = JSON.parse(raw) || [];
-  } catch (_) {
-    playHistory = [];
-  }
+  try { const raw = localStorage.getItem(HISTORY_KEY); if (raw) playHistory = JSON.parse(raw) || []; } catch (_) { playHistory = []; }
 }
 
 function pushHistory(track) {
@@ -195,18 +186,9 @@ function trackKey(t) {
   return `local:${t.name || ''}|${t.artist || ''}`;
 }
 
-function saveFavorites() {
-  try { localStorage.setItem(FAV_KEY, JSON.stringify(favorites)); } catch (_) {}
-}
-
+function saveFavorites() { try { localStorage.setItem(FAV_KEY, JSON.stringify(favorites)); } catch (_) {} }
 function loadFavorites() {
-  try {
-    const raw = localStorage.getItem(FAV_KEY);
-    favorites = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(favorites)) favorites = [];
-  } catch (_) {
-    favorites = [];
-  }
+  try { const raw = localStorage.getItem(FAV_KEY); favorites = raw ? JSON.parse(raw) : []; if (!Array.isArray(favorites)) favorites = []; } catch (_) { favorites = []; }
 }
 
 function isFavorite(track) {
@@ -240,25 +222,14 @@ function toggleFavorite() {
   const track = tracks[currentIndex];
   const k = trackKey(track);
   const idx = favorites.findIndex((f) => trackKey(f) === k);
-  if (idx >= 0) {
-    favorites.splice(idx, 1);
-    flashStatus('UNLIKED');
-  } else {
-    favorites.unshift(toFavItem(track));
-    flashStatus('LIKED');
-  }
-  saveFavorites();
-  updateFavButton();
-  renderFavList();
-  haptic(12);
+  if (idx >= 0) { favorites.splice(idx, 1); flashStatus('UNLIKED'); }
+  else { favorites.unshift(toFavItem(track)); flashStatus('LIKED'); }
+  saveFavorites(); updateFavButton(); renderFavList(); haptic(12);
 }
 
 function renderFavList() {
   if (!favListEl) return;
-  if (!favorites.length) {
-    favListEl.innerHTML = `<div class="empty-tip">还没有收藏，播放时点爱心即可添加</div>`;
-    return;
-  }
+  if (!favorites.length) { favListEl.innerHTML = `<div class="empty-tip">还没有收藏，播放时点爱心即可添加</div>`; return; }
   favListEl.innerHTML = favorites.map((t, i) => `
     <div class="track-item fav-item" data-fav-index="${i}">
       <div class="track-num">${i + 1}</div>
@@ -279,11 +250,7 @@ favListEl.addEventListener('click', (e) => {
     if (Number.isNaN(i)) return;
     if (!confirm(`确定取消收藏「${favorites[i]?.name || ''}」吗？`)) return;
     favorites.splice(i, 1);
-    saveFavorites();
-    renderFavList();
-    updateFavButton();
-    flashStatus('UNLIKED');
-    return;
+    saveFavorites(); renderFavList(); updateFavButton(); flashStatus('UNLIKED'); return;
   }
   const item = e.target.closest('.fav-item');
   if (!item || !favListEl.contains(item)) return;
@@ -308,8 +275,7 @@ async function playAllFavorites() {
     } else skippedLocal++;
   }
   if (isShuffle) rebuildShuffle();
-  persistAll();
-  renderPlaylist(); renderLibrary(); renderFavList();
+  persistAll(); renderPlaylist(); renderLibrary(); renderFavList();
   if (firstIdx < 0) { alert('收藏中没有可直接播放的歌曲\n(本地收藏需到「本地」重新导入文件后再播放)'); return; }
   await loadTrack(firstIdx);
   audio.play().catch(() => {});
@@ -320,12 +286,7 @@ async function playAllFavorites() {
 async function playFavorite(item) {
   if (!item) return;
   const exist = tracks.findIndex((t) => trackKey(t) === trackKey(item));
-  if (exist >= 0) {
-    await loadTrack(exist);
-    audio.play().catch(() => {});
-    closeSheetPanel();
-    return;
-  }
+  if (exist >= 0) { await loadTrack(exist); audio.play().catch(() => {}); closeSheetPanel(); return; }
   if (item.isOnline && item.id) {
     tracks.push({
       id: item.id, name: item.name, artist: item.artist, album: item.album || '',
@@ -333,12 +294,9 @@ async function playFavorite(item) {
       isOnline: true, url: null, cover: item.cover || null, duration: item.duration || null
     });
     if (isShuffle) rebuildShuffle();
-    persistAll();
-    renderPlaylist(); renderLibrary();
+    persistAll(); renderPlaylist(); renderLibrary();
     await loadTrack(tracks.length - 1);
-    audio.play().catch(() => {});
-    closeSheetPanel();
-    return;
+    audio.play().catch(() => {}); closeSheetPanel(); return;
   }
   flashStatus('NEED RE-IMPORT');
   alert('该收藏是本地歌曲，请到「本地」重新导入同名文件后再播放。');
@@ -350,8 +308,7 @@ function exportFavorites() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url; a.download = `ipod-favorites-${new Date().toISOString().slice(0, 10)}.json`;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   flashStatus('EXPORTED');
 }
 
@@ -370,9 +327,7 @@ function importFavoritesFile(file) {
           cover: item.cover || null, isOnline: item.isOnline !== false && !!(item.id || item.isOnline),
           id: item.id || null, source: item.source || 'netease', pic_id: item.pic_id || null, duration: item.duration || null
         });
-        if (!favorites.some((f) => trackKey(f) === trackKey(norm))) {
-          favorites.push(norm); added++;
-        }
+        if (!favorites.some((f) => trackKey(f) === trackKey(norm))) { favorites.push(norm); added++; }
       });
       saveFavorites(); renderFavList(); updateFavButton();
       alert(`已导入，新增 ${added} 首(已自动跳过重复)`);
@@ -507,28 +462,37 @@ function animateCoverChange(applyContent, direction = 'next') {
 
 function updateScrubToggle() { if (scrubToggle) scrubToggle.setAttribute('aria-pressed', scrubEnabled ? 'true' : 'false'); }
 
-function computeSheetHeight() {
-  if (!screenEl) return null;
-  const rect = screenEl.getBoundingClientRect();
-  let offset = 17;
-  if (ipodEl) {
-    const ipodRect = ipodEl.getBoundingClientRect();
-    if (rect.top > ipodRect.top) offset = rect.top - ipodRect.top;
-  }
-  const vh = window.innerHeight || document.documentElement.clientHeight;
-  let h = vh - rect.bottom - offset;
-  const min = 360, max = Math.max(min, vh * 0.9);
-  if (!isFinite(h) || h <= 0) h = Math.min(vh * 0.5, max);
-  if (h < min) h = min;
-  if (h > max) h = max;
-  return h;
-}
-
+// 核心修复：高度计算加入 offset，使留白等于顶部黑边高度
 function positionSheet() {
   if (!sheetEl) return;
-  if (sheetFullscreen) { sheetEl.style.removeProperty('--sheet-height'); return; }
-  const h = computeSheetHeight();
-  if (h) sheetEl.style.setProperty('--sheet-height', h + 'px');
+  if (sheetFullscreen) {
+    sheetEl.style.removeProperty('--sheet-height');
+    return;
+  }
+  
+  const screenEl = document.querySelector('.screen');
+  const ipodEl = document.querySelector('.ipod');
+  if (!screenEl || !ipodEl) return;
+  
+  const rect = screenEl.getBoundingClientRect();
+  const ipodRect = ipodEl.getBoundingClientRect();
+  
+  // 获取屏幕顶部黑边距离外壳顶部的高度 (通常为 17px)
+  let offset = rect.top - ipodRect.top;
+  if (offset < 0) offset = 17; // 兜底
+  
+  const vh = window.innerHeight || document.documentElement.clientHeight;
+  
+  // 弹层高度 = 视口高度 - 屏幕下沿位置 - 留白高度(offset)
+  let h = vh - rect.bottom - offset;
+  const min = 320;
+  const max = Math.max(min, vh * 0.9);
+  
+  if (!isFinite(h) || h <= 0) h = Math.min(vh * 0.6, max);
+  if (h < min) h = min;
+  if (h > max) h = max;
+  
+  sheetEl.style.setProperty('--sheet-height', h + 'px');
 }
 
 function applySheetPrefs() {
@@ -722,7 +686,8 @@ async function loadTrack(index, opts = {}) {
     titleEl.textContent = track.name;
   }
   audio.src = track.url; audio.load(); pushHistory(track);
-  saveSettings(); updateFavButton(); updateMediaSession();
+  saveSettings();
+  updateFavButton(); updateMediaSession();
 }
 
 function togglePlay() {
@@ -871,7 +836,9 @@ async function removeTrackFromList(index, skipConfirm = false) {
   if (index < 0 || index >= tracks.length) return;
   const track = tracks[index];
   if (!skipConfirm && !confirm(`确定从播放列表中移除「${track.name}」吗？`)) return;
-  if (track.url && String(track.url).startsWith('blob:')) { try { URL.revokeObjectURL(track.url); } catch (_) {} }
+  if (track.url && String(track.url).startsWith('blob:')) {
+    try { URL.revokeObjectURL(track.url); } catch (_) {} 
+  }
   tracks.splice(index, 1);
   if (tracks.length === 0) {
     currentIndex = -1; audio.pause(); audio.removeAttribute('src');
@@ -965,16 +932,12 @@ searchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch
 const sourceCheckBtn = document.getElementById('sourceCheckBtn');
 if (sourceCheckBtn) { sourceCheckBtn.addEventListener('click', (e) => { e.stopPropagation(); checkAllSources(); }); }
 
-// 窗口大小或横竖屏切换时，重置高度并重算弹层位置
-function handleResize() {
-  document.documentElement.style.setProperty('--vh', window.innerHeight * 0.01 + 'px');
-  if (sheetPanel.classList.contains('show')) {
-    positionSheet();
-  }
-}
-window.addEventListener('resize', handleResize);
-window.addEventListener('orientationchange', () => { setTimeout(handleResize, 200); });
-if (window.visualViewport) { window.visualViewport.addEventListener('resize', handleResize); }
+window.addEventListener('resize', () => {
+  if (sheetPanel.classList.contains('show')) positionSheet();
+});
+window.addEventListener('orientationchange', () => {
+  if (sheetPanel.classList.contains('show')) setTimeout(positionSheet, 200);
+});
 
 let isDragging = false;
 progressBar.addEventListener('touchstart', startDrag, { passive: false });
@@ -1142,6 +1105,4 @@ if (coverAnimSelect) {
   });
 }
 
-// 初始化视口高度
-handleResize();
 bootstrap();
