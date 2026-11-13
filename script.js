@@ -176,7 +176,6 @@ function pushHistory(track) {
   saveHistory();
 }
 
-/* persistAll 防抖：避免每首歌都全量重写 IndexedDB */
 let persistTimer = null;
 function persistAll() {
   saveSettings();
@@ -189,6 +188,11 @@ function persistAll() {
 }
 window.addEventListener('pagehide', () => {
   if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; saveTracksToDB(); }
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden' && persistTimer) {
+    clearTimeout(persistTimer); persistTimer = null; saveTracksToDB();
+  }
 });
 
 function trackKey(t) {
@@ -421,9 +425,17 @@ function updateMediaSession() {
   if (!('mediaSession' in navigator)) return;
   try {
     const track = currentIndex >= 0 ? tracks[currentIndex] : null;
+    
+    // 补全了图片的 type，避免 iOS 锁屏崩溃
+    let artwork = [];
+    if (track && track.cover) {
+      const type = track.cover.startsWith('data:image/png') ? 'image/png' : 'image/jpeg';
+      artwork = [{ src: track.cover, sizes: '512x512', type: type }];
+    }
+
     navigator.mediaSession.metadata = track ? new MediaMetadata({
       title: track.name, artist: track.artist || '未知艺术家', album: track.album || '',
-      artwork: track.cover ? [{ src: track.cover, sizes: '512x512' }] : []
+      artwork: artwork
     }) : null;
     navigator.mediaSession.setActionHandler('play', togglePlay);
     navigator.mediaSession.setActionHandler('pause', togglePlay);
@@ -462,7 +474,6 @@ function applyCoverAnimClass() {
   if (coverAnimMode && coverAnimMode !== 'none') coverBox.classList.add('anim-' + coverAnimMode);
 }
 
-/* 带超时兜底，避免系统减弱动效 / 动画未触发导致 Promise 永久挂起 */
 function animateCoverChange(applyContent, direction = 'next') {
   if (!coverBox || coverAnimMode === 'none') { applyContent(); return Promise.resolve(); }
   applyCoverAnimClass();
@@ -498,12 +509,40 @@ function animateCoverChange(applyContent, direction = 'next') {
 
 function updateScrubToggle() { if (scrubToggle) scrubToggle.setAttribute('aria-pressed', scrubEnabled ? 'true' : 'false'); }
 
-/* ================= 弹层位置(支持软键盘) ================= */
+/* ================= 弹层位置 (键盘深度适配) ================= */
 
 function positionSheet() {
   if (!sheetEl) return;
-  if (sheetFullscreen) { sheetEl.style.removeProperty('--sheet-height'); return; }
 
+  const vv = window.visualViewport;
+  const vh = (vv && vv.height) || window.innerHeight || document.documentElement.clientHeight;
+  
+  // 判断键盘是否弹起
+  const isKeyboardOpen = vv && (window.innerHeight - vv.height > 150);
+
+  // 核心修改：如果键盘弹起，把整个遮罩层的高度写死到"可视区域"的高度
+  // 这样即使 iOS 向上推动了整个 body，遮罩层也只会紧贴键盘上方
+  if (vv && sheetPanel.classList.contains('show')) {
+    sheetPanel.style.height = `${vh}px`;
+    sheetPanel.style.top = `${vv.offsetTop}px`;
+    sheetPanel.style.bottom = 'auto';
+  }
+
+  if (sheetFullscreen) {
+    sheetEl.style.removeProperty('--sheet-height');
+    if (isKeyboardOpen) {
+      sheetEl.style.setProperty('--sheet-height', `${vh}px`);
+    }
+    return;
+  }
+
+  if (isKeyboardOpen) {
+    // 键盘弹起状态，面板占据可视区的 85%，保证搜索框在可视范围内
+    sheetEl.style.setProperty('--sheet-height', `${vh * 0.85}px`);
+    return;
+  }
+
+  // 正常无键盘状态
   const screenEl = document.querySelector('.screen');
   const ipodEl = document.querySelector('.ipod');
   if (!screenEl || !ipodEl) return;
@@ -513,14 +552,12 @@ function positionSheet() {
   let offset = rect.top - ipodRect.top;
   if (offset < 0) offset = 17;
 
-  const vv = window.visualViewport;
-  const vh = (vv && vv.height) || window.innerHeight || document.documentElement.clientHeight;
-
   let h = vh - rect.bottom - offset;
   const min = 320;
   const max = Math.max(min, vh * 0.9);
   if (!isFinite(h) || h <= 0) h = Math.min(vh * 0.6, max);
   h = Math.max(min, Math.min(max, h));
+  
   sheetEl.style.setProperty('--sheet-height', h + 'px');
 }
 
@@ -532,6 +569,18 @@ if (window.visualViewport) {
     if (sheetPanel.classList.contains('show')) positionSheet();
   });
 }
+
+// 防止部分 iOS 键盘弹出延迟导致监听失效
+document.addEventListener('focusin', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+    setTimeout(() => { if (sheetPanel.classList.contains('show')) positionSheet(); }, 250);
+  }
+});
+document.addEventListener('focusout', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+    setTimeout(() => { if (sheetPanel.classList.contains('show')) positionSheet(); }, 250);
+  }
+});
 
 function applySheetPrefs() {
   if (!sheetPanel) return;
@@ -623,7 +672,6 @@ async function checkAllSources() {
   haptic(12);
 }
 
-/* 12 秒超时，避免网络差时无限等待 */
 async function apiFetch(params) {
   const url = new URL(API_BASE);
   Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
@@ -678,7 +726,6 @@ function rebuildShuffle() {
   }
 }
 
-/* 加载失败自动跳下一首：只有 loadTrack 成功才尝试 play */
 function skipFailedTrack(reason = 'SKIP FAILED') {
   const track = currentIndex >= 0 ? tracks[currentIndex] : null;
   if (!track || tracks.length === 0) return;
@@ -704,8 +751,6 @@ function skipFailedTrack(reason = 'SKIP FAILED') {
   }
 }
 
-/* 返回 Promise<boolean>：true 表示资源已就绪，调用方自行决定是否 play
- * opts.deferOnline：在线歌不拉取 URL(bootstrap 恢复时使用，避免打开就耗流量) */
 async function loadTrack(index, opts = {}) {
   if (index < 0 || index >= tracks.length) return false;
   const { direction, deferOnline } = opts;
@@ -729,7 +774,6 @@ async function loadTrack(index, opts = {}) {
 
   if (track.isOnline && !track.url) {
     if (deferOnline) {
-      /* 只展示信息，不请求 URL；用户点播放时 togglePlay 会重新加载 */
       updateFavButton(); updateMediaSession();
       return true;
     }
@@ -775,7 +819,7 @@ function togglePlay() {
   }
   const track = tracks[currentIndex];
   if (!track) return;
-  /* bootstrap 时 deferOnline 加载的在线歌还没有 URL，需要先拉取 */
+  
   if (track.isOnline && !track.url) {
     loadTrack(currentIndex).then((ok) => { if (ok) audio.play().catch(() => {}); });
     return;
@@ -859,7 +903,6 @@ libraryList.addEventListener('click', (e) => {
   loadTrack(idx).then((ok) => { if (ok) audio.play().catch(() => {}); });
 });
 
-/* 搜索区按钮状态用 Set 缓存，避免 O(n²) */
 function buildAddedOnlineSet() {
   const s = new Set();
   tracks.forEach((t) => { if (t.isOnline && t.id) s.add(`${t.source || 'netease'}:${t.id}`); });
@@ -872,8 +915,7 @@ function renderSearchResults(list) {
   const addedSet = buildAddedOnlineSet();
   searchResults.innerHTML = list.map((item, i) => {
     const artist = Array.isArray(item.artist) ? item.artist.join(' / ') : (item.artist || '未知');
-    const src = item.source || sourceSelect.value;
-    const isAdded = addedSet.has(`${src}:${item.id}`);
+    const isAdded = addedSet.has(`${item.source}:${item.id}`);
     return `
       <div class="track-item online" data-search-index="${i}">
         <div class="track-info-list">
@@ -894,7 +936,7 @@ function syncSearchButtons() {
     const idx = parseInt(btn.dataset.searchIndex, 10);
     if (isNaN(idx) || !lastSearchList[idx]) return;
     const item = lastSearchList[idx];
-    const isAdded = addedSet.has(`${item.source || sourceSelect.value}:${item.id}`);
+    const isAdded = addedSet.has(`${item.source}:${item.id}`);
     if (isAdded) { btn.textContent = '✓'; btn.style.color = '#30d158'; }
     else { btn.textContent = '＋'; btn.style.color = ''; }
   });
@@ -907,8 +949,7 @@ searchResults.addEventListener('click', (e) => {
   if (Number.isNaN(idx) || !lastSearchList[idx]) return;
   if (addBtn) {
     const searchItem = lastSearchList[idx];
-    const src = searchItem.source || sourceSelect.value;
-    const isAdded = tracks.some(t => t.isOnline && t.id === searchItem.id && t.source === src);
+    const isAdded = tracks.some(t => t.isOnline && t.id === searchItem.id && t.source === searchItem.source);
     if (isAdded) removeOnlineTrack(searchItem); else addOnlineTrack(searchItem);
     syncSearchButtons();
   } else { playOnlineTrack(lastSearchList[idx]); }
@@ -919,7 +960,7 @@ function addOnlineTrack(item) {
   if (tracks.some(t => t.isOnline && t.id === item.id && t.source === item.source)) return;
   tracks.push({
     id: item.id, name: item.name, artist, album: item.album || '',
-    pic_id: item.pic_id, source: item.source || sourceSelect.value,
+    pic_id: item.pic_id, source: item.source,
     isOnline: true, url: null, cover: null, duration: null
   });
   if (isShuffle) rebuildShuffle();
@@ -927,7 +968,7 @@ function addOnlineTrack(item) {
 }
 
 function removeOnlineTrack(item) {
-  const idx = tracks.findIndex(t => t.isOnline && t.id === item.id && t.source === (item.source || sourceSelect.value));
+  const idx = tracks.findIndex(t => t.isOnline && t.id === item.id && t.source === item.source);
   if (idx >= 0) removeTrackFromList(idx, true);
 }
 
@@ -960,7 +1001,7 @@ async function removeTrackFromList(index, skipConfirm = false) {
 
 async function playOnlineTrack(item) {
   addOnlineTrack(item);
-  const idx = tracks.findIndex(t => t.isOnline && t.id === item.id && t.source === (item.source || sourceSelect.value));
+  const idx = tracks.findIndex(t => t.isOnline && t.id === item.id && t.source === item.source);
   if (idx >= 0) {
     const ok = await loadTrack(idx);
     if (ok) audio.play().catch(() => {});
@@ -975,7 +1016,11 @@ async function doSearch() {
   searchResults.innerHTML = `<div class="empty-tip">搜索中…</div>`;
   try {
     const data = await searchSongs(keyword, sourceSelect.value, 25, 1);
-    const list = Array.isArray(data) ? data : [];
+    // 核心修复：强制给搜索结果补全 source，防止用户中途切换音源导致匹配错乱
+    const list = (Array.isArray(data) ? data : []).map(item => {
+      item.source = item.source || sourceSelect.value;
+      return item;
+    });
     searchStatus.textContent = `找到 ${list.length} 首 · GD音乐台`;
     renderSearchResults(list);
   } catch (err) {
@@ -986,8 +1031,22 @@ async function doSearch() {
   }
 }
 
-function openSheet() { positionSheet(); sheetPanel.classList.add('show'); }
-function closeSheetPanel() { sheetPanel.classList.remove('show'); }
+function openSheet() { 
+  positionSheet(); 
+  sheetPanel.classList.add('show'); 
+}
+
+function closeSheetPanel() { 
+  sheetPanel.classList.remove('show'); 
+  sheetPanel.style.height = '';
+  sheetPanel.style.top = '';
+  sheetPanel.style.bottom = '';
+  sheetEl.style.removeProperty('--sheet-height');
+  
+  if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA')) {
+    document.activeElement.blur();
+  }
+}
 
 function switchTab(name) {
   const tabs = { local: tabLocal, fav: tabFav, online: tabOnline }, panels = { local: panelLocal, fav: panelFav, online: panelOnline };
@@ -1177,7 +1236,6 @@ fileInput.addEventListener('change', async (e) => {
   fileInput.value = '';
 });
 
-/* 压缩封面到 300px，避免 IndexedDB 里堆积超大的 base64 */
 function shrinkCover(dataUrl, max = 300) {
   return new Promise((resolve) => {
     const img = new Image();
@@ -1248,7 +1306,6 @@ async function bootstrap() {
   }
   updatePlayIcon(); updateModeIcons(); updateScrubToggle(); updateFavButton(); updateStatusHint(); applyCoverAnimClass(); applySheetPrefs();
   renderPlaylist(); renderLibrary(); renderFavList();
-  /* deferOnline：恢复时只显示信息，不主动拉在线 URL，避免打开就自动播放/耗流量 */
   if (currentIndex >= 0 && tracks[currentIndex]) await loadTrack(currentIndex, { deferOnline: true });
 }
 

@@ -30,7 +30,6 @@ html, body {
 input, textarea, select { user-select: text; -webkit-user-select: text; }
 body { padding: 0; overflow: hidden; }
 
-/* 核心修改：全局最大宽度收窄至 360px，视觉上更精巧 */
 .app {
   max-width: 360px; 
   margin: 0 auto; 
@@ -42,7 +41,6 @@ body { padding: 0; overflow: hidden; }
   transition: all 0.3s ease;
 }
 
-/* 基础尺寸 */
 .cover-wrap { width: 84px; height: 84px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
 .cover-box { width: 80px; height: 80px; }
 .click-wheel { display: flex; justify-content: center; padding: 16px 0 8px; }
@@ -167,7 +165,8 @@ body { padding: 0; overflow: hidden; }
   width: 12px; height: 12px; background: #fff; border-radius: 50%; box-shadow: 0 1px 4px rgba(0,0,0,0.25); border: 0.5px solid rgba(0,0,0,0.05);
   opacity: 1; transition: opacity 0.1s;
 }
-.progress[style*="width: 0%"]
+
+.progress.is-zero::after { opacity: 0; }
 
 .time-row { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; font-size: 10px; color: #8e8e93; font-variant-numeric: tabular-nums; }
 .screen-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; padding-top: 8px; border-top: 0.5px solid rgba(0,0,0,0.06); gap: 8px; }
@@ -218,7 +217,6 @@ body { padding: 0; overflow: hidden; }
 .footer-text, .capacity { display: inline-flex; align-items: center; line-height: 1; }
 .capacity { opacity: 0.7; }
 
-/* ====== 底部音乐库 ====== */
 .library { flex: 1; display: flex; flex-direction: column; min-height: 0; margin-bottom: 4px; }
 .library-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 10px; padding: 0 4px; flex-shrink: 0; }
 .library-sub { font-size: 10px; font-weight: 600; letter-spacing: 0.8px; color: #8e8e93; }
@@ -241,24 +239,23 @@ body { padding: 0; overflow: hidden; }
 .library-duration { font-size: 11px; color: #8e8e93; font-variant-numeric: tabular-nums; }
 .empty-tip { text-align: center; padding: 24px 16px; color: #8e8e93; font-size: 13px; line-height: 1.5; }
 
-/* ====== 弹层 ====== */
 .sheet-panel { 
   position: fixed; inset: 0; background: rgba(0,0,0,0.3); 
   backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); 
   z-index: 100; display: none; flex-direction: column; justify-content: flex-end; 
-  align-items: center; /* 居中对齐，确保在宽屏下两侧留白 */
+  align-items: center;
 }
 .sheet-panel.show { display: flex; }
 .sheet { 
   background: #f5f5f7; border-radius: 24px 24px 0 0; 
   width: 100%;
-  max-width: 360px; /* 收窄到和上方 app 一致 */
+  max-width: 360px;
   height: var(--sheet-height, 60dvh); min-height: 320px; max-height: 90dvh;
   display: flex; flex-direction: column; padding-bottom: var(--safe-bottom); 
   box-shadow: 0 -4px 24px rgba(0,0,0,0.1); transition: height 0.22s ease, border-radius 0.22s ease; 
 }
 .sheet-panel.fullscreen .sheet { 
-  height: 100dvh; min-height: 100dvh; max-height: 100dvh; 
+  height: 100%; min-height: 100%; max-height: 100%; 
   border-radius: 0; 
   max-width: 100%; 
 }
@@ -317,7 +314,7 @@ body { padding: 0; overflow: hidden; }
 
 .search-box { display: flex; gap: 8px; padding: 12px 16px; border-bottom: 0.5px solid rgba(0,0,0,0.05); flex-shrink: 0; }
 .source-select { background: rgba(0,0,0,0.04); border: none; border-radius: 8px; padding: 0 8px; font-size: 12px; max-width: 80px; outline: none; }
-#searchInput { flex: 1; min-width: 0; background: rgba(0,0,0,0.04); border: none; border-radius: 8px; padding: 8px 12px; font-size: 14px; outline: none; }
+#searchInput { flex: 1; min-width: 0; background: rgba(0,0,0,0.04); border: none; border-radius: 8px; padding: 8px 12px; font-size: 16px; outline: none; }
 .search-btn { background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 0 14px; font-size: 13px; font-weight: 500; white-space: nowrap; flex-shrink: 0; min-width: 52px; }
 .search-status { padding: 10px 16px; font-size: 12px; color: #3a3a3c; min-height: 18px; flex-shrink: 0; line-height: 1.5; background: rgba(255,255,255,0.4); border-bottom: 0.5px solid rgba(0,0,0,0.05); display: block; }
 .search-status.error { color: #ff3b30; }
