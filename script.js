@@ -75,6 +75,8 @@ const SETTINGS_KEY = 'ipodSettings';
 const HISTORY_KEY = 'ipodPlayHistory';
 const FAV_KEY = 'ipodFavorites';
 
+/* ================= 数据库 ================= */
+
 function openDB() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, 1);
@@ -140,6 +142,8 @@ async function loadTracksFromDB() {
   }
 }
 
+/* ================= 设置 / 历史 / 收藏 ================= */
+
 function saveSettings() {
   try {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify({ currentIndex, isShuffle, repeatMode, scrubEnabled }));
@@ -161,11 +165,9 @@ function loadSettings() {
 function saveHistory() {
   try { localStorage.setItem(HISTORY_KEY, JSON.stringify(playHistory.slice(0, 50))); } catch (_) {}
 }
-
 function loadHistory() {
   try { const raw = localStorage.getItem(HISTORY_KEY); if (raw) playHistory = JSON.parse(raw) || []; } catch (_) { playHistory = []; }
 }
-
 function pushHistory(track) {
   if (!track) return;
   playHistory = playHistory.filter((h) => !(h.name === track.name && h.artist === track.artist && !!h.isOnline === !!track.isOnline));
@@ -174,11 +176,20 @@ function pushHistory(track) {
   saveHistory();
 }
 
+/* persistAll 防抖：避免每首歌都全量重写 IndexedDB */
+let persistTimer = null;
 function persistAll() {
   saveSettings();
-  saveTracksToDB();
   saveFavorites();
+  if (persistTimer) clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    saveTracksToDB();
+  }, 400);
 }
+window.addEventListener('pagehide', () => {
+  if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; saveTracksToDB(); }
+});
 
 function trackKey(t) {
   if (!t) return '';
@@ -277,8 +288,8 @@ async function playAllFavorites() {
   if (isShuffle) rebuildShuffle();
   persistAll(); renderPlaylist(); renderLibrary(); renderFavList();
   if (firstIdx < 0) { alert('收藏中没有可直接播放的歌曲\n(本地收藏需到「本地」重新导入文件后再播放)'); return; }
-  await loadTrack(firstIdx);
-  audio.play().catch(() => {});
+  const ok = await loadTrack(firstIdx);
+  if (ok) audio.play().catch(() => {});
   closeSheetPanel();
   flashStatus(skippedLocal > 0 ? `PLAYING · SKIP ${skippedLocal}` : 'PLAYING FAVORITES');
 }
@@ -286,7 +297,11 @@ async function playAllFavorites() {
 async function playFavorite(item) {
   if (!item) return;
   const exist = tracks.findIndex((t) => trackKey(t) === trackKey(item));
-  if (exist >= 0) { await loadTrack(exist); audio.play().catch(() => {}); closeSheetPanel(); return; }
+  if (exist >= 0) {
+    const ok = await loadTrack(exist);
+    if (ok) audio.play().catch(() => {});
+    closeSheetPanel(); return;
+  }
   if (item.isOnline && item.id) {
     tracks.push({
       id: item.id, name: item.name, artist: item.artist, album: item.album || '',
@@ -295,8 +310,9 @@ async function playFavorite(item) {
     });
     if (isShuffle) rebuildShuffle();
     persistAll(); renderPlaylist(); renderLibrary();
-    await loadTrack(tracks.length - 1);
-    audio.play().catch(() => {}); closeSheetPanel(); return;
+    const ok = await loadTrack(tracks.length - 1);
+    if (ok) audio.play().catch(() => {});
+    closeSheetPanel(); return;
   }
   flashStatus('NEED RE-IMPORT');
   alert('该收藏是本地歌曲，请到「本地」重新导入同名文件后再播放。');
@@ -338,6 +354,7 @@ function importFavoritesFile(file) {
 
 async function clearAllPlayData() {
   if (!confirm('确定清除全部播放数据？\n包括：播放列表、本地缓存歌曲、收藏、设置与播放记录。')) return;
+  if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; }
   tracks.forEach((t) => {
     if (t.url && String(t.url).startsWith('blob:')) { try { URL.revokeObjectURL(t.url); } catch (_) {} }
   });
@@ -357,6 +374,8 @@ async function clearAllPlayData() {
   renderPlaylist(); renderLibrary(); renderFavList(); syncSearchButtons();
   flashStatus('CLEARED');
 }
+
+/* ================= 工具函数 ================= */
 
 function formatTime(sec) {
   if (!sec || isNaN(sec)) return '0:00';
@@ -398,8 +417,6 @@ function updatePlayIcon() {
   updateStatusHint();
 }
 
-let statusHintTimer = null;
-
 function updateMediaSession() {
   if (!('mediaSession' in navigator)) return;
   try {
@@ -424,6 +441,7 @@ function updateStatusHint() {
   else { statusHintBtn.textContent = 'READY'; statusHintBtn.classList.remove('is-playing'); }
 }
 
+let statusHintTimer = null;
 function flashStatus(text, ms = 1100) {
   if (!statusHintBtn) return;
   if (statusHintTimer) clearTimeout(statusHintTimer);
@@ -431,7 +449,11 @@ function flashStatus(text, ms = 1100) {
   statusHintTimer = setTimeout(() => { statusHintTimer = null; updateStatusHint(); }, ms);
 }
 
-let coverAnimMode = localStorage.getItem('ipodCoverAnim') || 'flip';
+/* ================= 封面动画 ================= */
+
+let coverAnimMode = 'flip';
+try { coverAnimMode = localStorage.getItem('ipodCoverAnim') || 'flip'; } catch (_) {}
+
 let loadSeq = 0;
 
 function applyCoverAnimClass() {
@@ -440,20 +462,34 @@ function applyCoverAnimClass() {
   if (coverAnimMode && coverAnimMode !== 'none') coverBox.classList.add('anim-' + coverAnimMode);
 }
 
+/* 带超时兜底，避免系统减弱动效 / 动画未触发导致 Promise 永久挂起 */
 function animateCoverChange(applyContent, direction = 'next') {
   if (!coverBox || coverAnimMode === 'none') { applyContent(); return Promise.resolve(); }
   applyCoverAnimClass();
-  const outClass = direction === 'prev' ? 'cover-out-prev' : 'cover-out-next', inClass = direction === 'prev' ? 'cover-in-prev' : 'cover-in-next';
+  const outClass = direction === 'prev' ? 'cover-out-prev' : 'cover-out-next';
+  const inClass  = direction === 'prev' ? 'cover-in-prev'  : 'cover-in-next';
+
   return new Promise((resolve) => {
+    let settled = false, applied = false;
+    const applyOnce = () => { if (!applied) { applied = true; applyContent(); } };
+    const finish = () => {
+      if (settled) return; settled = true;
+      clearTimeout(timer);
+      coverBox.classList.remove('cover-in-prev', 'cover-in-next', 'cover-out-prev', 'cover-out-next');
+      if (isPlaying) coverBox.classList.add('is-playing');
+      resolve();
+    };
+    const timer = setTimeout(() => { applyOnce(); finish(); }, 900);
+
     coverBox.classList.remove('cover-in-prev', 'cover-in-next', 'cover-out-prev', 'cover-out-next');
     coverBox.classList.add(outClass);
+
     const onOut = () => {
-      coverBox.removeEventListener('animationend', onOut); applyContent();
-      coverBox.classList.remove(outClass); coverBox.classList.add(inClass);
-      const onIn = () => {
-        coverBox.removeEventListener('animationend', onIn); coverBox.classList.remove(inClass);
-        if (isPlaying) coverBox.classList.add('is-playing'); resolve();
-      };
+      coverBox.removeEventListener('animationend', onOut);
+      applyOnce();
+      coverBox.classList.remove(outClass);
+      coverBox.classList.add(inClass);
+      const onIn = () => { coverBox.removeEventListener('animationend', onIn); finish(); };
       coverBox.addEventListener('animationend', onIn);
     };
     coverBox.addEventListener('animationend', onOut);
@@ -462,37 +498,39 @@ function animateCoverChange(applyContent, direction = 'next') {
 
 function updateScrubToggle() { if (scrubToggle) scrubToggle.setAttribute('aria-pressed', scrubEnabled ? 'true' : 'false'); }
 
-// 核心修复：高度计算加入 offset，使留白等于顶部黑边高度
+/* ================= 弹层位置(支持软键盘) ================= */
+
 function positionSheet() {
   if (!sheetEl) return;
-  if (sheetFullscreen) {
-    sheetEl.style.removeProperty('--sheet-height');
-    return;
-  }
-  
+  if (sheetFullscreen) { sheetEl.style.removeProperty('--sheet-height'); return; }
+
   const screenEl = document.querySelector('.screen');
   const ipodEl = document.querySelector('.ipod');
   if (!screenEl || !ipodEl) return;
-  
+
   const rect = screenEl.getBoundingClientRect();
   const ipodRect = ipodEl.getBoundingClientRect();
-  
-  // 获取屏幕顶部黑边距离外壳顶部的高度 (通常为 17px)
   let offset = rect.top - ipodRect.top;
-  if (offset < 0) offset = 17; // 兜底
-  
-  const vh = window.innerHeight || document.documentElement.clientHeight;
-  
-  // 弹层高度 = 视口高度 - 屏幕下沿位置 - 留白高度(offset)
+  if (offset < 0) offset = 17;
+
+  const vv = window.visualViewport;
+  const vh = (vv && vv.height) || window.innerHeight || document.documentElement.clientHeight;
+
   let h = vh - rect.bottom - offset;
   const min = 320;
   const max = Math.max(min, vh * 0.9);
-  
   if (!isFinite(h) || h <= 0) h = Math.min(vh * 0.6, max);
-  if (h < min) h = min;
-  if (h > max) h = max;
-  
+  h = Math.max(min, Math.min(max, h));
   sheetEl.style.setProperty('--sheet-height', h + 'px');
+}
+
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', () => {
+    if (sheetPanel.classList.contains('show')) positionSheet();
+  });
+  window.visualViewport.addEventListener('scroll', () => {
+    if (sheetPanel.classList.contains('show')) positionSheet();
+  });
 }
 
 function applySheetPrefs() {
@@ -505,6 +543,8 @@ function applySheetPrefs() {
 }
 
 function haptic(ms = 10) { try { if (navigator.vibrate) navigator.vibrate(ms); } catch (_) {} }
+
+/* ================= 在线音源 ================= */
 
 const ALL_SOURCES = [
   { value: 'netease', name: '网易云' }, { value: 'tencent', name: 'QQ音乐' },
@@ -527,7 +567,7 @@ async function testSource(source) {
     const url = new URL(API_BASE);
     url.searchParams.set('types', 'search'); url.searchParams.set('source', source);
     url.searchParams.set('name', '周杰伦'); url.searchParams.set('count', '1'); url.searchParams.set('pages', '1');
-    const res = await fetch(url.toString(), { signal: controller.signal, headers: { 'Referer': 'https://music.gdstudio.xyz/' } });
+    const res = await fetch(url.toString(), { signal: controller.signal });
     if (!res.ok) return false;
     const data = await res.json();
     return Array.isArray(data) && data.length > 0;
@@ -583,12 +623,17 @@ async function checkAllSources() {
   haptic(12);
 }
 
+/* 12 秒超时，避免网络差时无限等待 */
 async function apiFetch(params) {
   const url = new URL(API_BASE);
   Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error('网络错误 ' + res.status);
-  return res.json();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12000);
+  try {
+    const res = await fetch(url.toString(), { signal: controller.signal });
+    if (!res.ok) throw new Error('网络错误 ' + res.status);
+    return await res.json();
+  } finally { clearTimeout(timer); }
 }
 
 async function searchSongs(keyword, source = 'netease', count = 20, page = 1) { return apiFetch({ types: 'search', source, name: keyword, count, pages: page }); }
@@ -597,6 +642,8 @@ async function getCoverUrl(picId, source = 'netease', size = 300) {
   if (!picId) return null;
   try { const data = await apiFetch({ types: 'pic', source, id: picId, size }); return data?.url || null; } catch { return null; }
 }
+
+/* ================= 播放流程 ================= */
 
 let consecutiveSkip = 0, failureSkipGuard = { key: '', at: 0 };
 
@@ -631,6 +678,7 @@ function rebuildShuffle() {
   }
 }
 
+/* 加载失败自动跳下一首：只有 loadTrack 成功才尝试 play */
 function skipFailedTrack(reason = 'SKIP FAILED') {
   const track = currentIndex >= 0 ? tracks[currentIndex] : null;
   if (!track || tracks.length === 0) return;
@@ -639,63 +687,97 @@ function skipFailedTrack(reason = 'SKIP FAILED') {
   failureSkipGuard = { key, at: now };
   if (consecutiveSkip >= tracks.length) {
     consecutiveSkip = 0; isPlaying = false; updatePlayIcon();
-    try { audio.pause(); } catch (_) {} flashStatus('ALL SOURCES FAILED', 1800); return;
+    try { audio.pause(); } catch (_) {}
+    flashStatus('ALL SOURCES FAILED', 1800); return;
   }
   consecutiveSkip++;
   flashStatus(reason, 1200);
   const next = getNextIndex(1);
   if (next >= 0 && next !== currentIndex) {
-    loadTrack(next, { direction: 'next' }).then(() => { audio.play().catch(() => {}); });
+    loadTrack(next, { direction: 'next' }).then((ok) => {
+      if (ok) audio.play().catch(() => {});
+    });
   } else {
     isPlaying = false; updatePlayIcon();
-    try { audio.pause(); } catch (_) {} flashStatus('PLAYBACK FAILED', 1800);
+    try { audio.pause(); } catch (_) {}
+    flashStatus('PLAYBACK FAILED', 1800);
   }
 }
 
+/* 返回 Promise<boolean>：true 表示资源已就绪，调用方自行决定是否 play
+ * opts.deferOnline：在线歌不拉取 URL(bootstrap 恢复时使用，避免打开就耗流量) */
 async function loadTrack(index, opts = {}) {
-  if (index < 0 || index >= tracks.length) return;
-  const { direction } = opts; const loadToken = ++loadSeq;
-  currentIndex = index; const track = tracks[index];
-  titleEl.textContent = track.name; artistEl.textContent = track.artist || '未知艺术家';
-  albumEl.textContent = track.album || ''; document.title = track.name + ' · iPod';
+  if (index < 0 || index >= tracks.length) return false;
+  const { direction, deferOnline } = opts;
+  const loadToken = ++loadSeq;
+  currentIndex = index;
+  const track = tracks[index];
+
+  titleEl.textContent = track.name;
+  artistEl.textContent = track.artist || '未知艺术家';
+  albumEl.textContent = track.album || '';
+  document.title = track.name + ' · iPod';
+
   const applyCover = () => {
     if (track.cover) { coverImg.src = track.cover; coverImg.classList.add('show'); coverBox.classList.add('has-cover'); }
     else { coverImg.classList.remove('show'); coverImg.removeAttribute('src'); coverBox.classList.remove('has-cover'); }
   };
   if (direction === 'prev' || direction === 'next') await animateCoverChange(applyCover, direction);
   else applyCover();
+
   renderLibrary(); renderPlaylist(); updateStatusHint();
+
   if (track.isOnline && !track.url) {
+    if (deferOnline) {
+      /* 只展示信息，不请求 URL；用户点播放时 togglePlay 会重新加载 */
+      updateFavButton(); updateMediaSession();
+      return true;
+    }
     titleEl.textContent = '正在获取…';
     try {
       const url = await getPlayUrl(track.id, track.source || 'netease', 320);
-      if (loadToken !== loadSeq) return;
+      if (loadToken !== loadSeq) return false;
       if (!url) throw new Error('无播放地址');
       track.url = url;
       if (!track.cover && track.pic_id) {
         const pic = await getCoverUrl(track.pic_id, track.source || 'netease');
-        if (loadToken !== loadSeq) return;
+        if (loadToken !== loadSeq) return false;
         if (pic) { track.cover = pic; coverImg.src = pic; coverImg.classList.add('show'); coverBox.classList.add('has-cover'); }
       }
     } catch (err) {
-      if (loadToken !== loadSeq) return;
-      titleEl.textContent = '获取失败'; artistEl.textContent = err.message || '请换一首';
-      skipFailedTrack('SKIP BAD SOURCE'); return;
+      if (loadToken !== loadSeq) return false;
+      titleEl.textContent = '获取失败';
+      artistEl.textContent = err.message || '请换一首';
+      skipFailedTrack('SKIP BAD SOURCE');
+      return false;
     }
-    if (loadToken !== loadSeq) return;
+    if (loadToken !== loadSeq) return false;
     titleEl.textContent = track.name;
   }
-  audio.src = track.url; audio.load(); pushHistory(track);
+
+  if (!track.url) return false;
+
+  audio.src = track.url;
+  audio.load();
+  pushHistory(track);
   saveSettings();
   updateFavButton(); updateMediaSession();
+  return true;
 }
 
 function togglePlay() {
   if (tracks.length === 0) { openSheet(); return; }
   if (currentIndex === -1) {
-    loadTrack(isShuffle ? (shuffledOrder[0] || 0) : 0).then(() => {
-      if (tracks[currentIndex]?.url) audio.play().catch(() => {});
+    loadTrack(isShuffle ? (shuffledOrder[0] || 0) : 0).then((ok) => {
+      if (ok) audio.play().catch(() => {});
     });
+    return;
+  }
+  const track = tracks[currentIndex];
+  if (!track) return;
+  /* bootstrap 时 deferOnline 加载的在线歌还没有 URL，需要先拉取 */
+  if (track.isOnline && !track.url) {
+    loadTrack(currentIndex).then((ok) => { if (ok) audio.play().catch(() => {}); });
     return;
   }
   if (isPlaying) audio.pause(); else audio.play().catch(() => {});
@@ -707,7 +789,9 @@ function prevTrack() {
   const next = getNextIndex(-1);
   if (next >= 0) {
     flashStatus('PREVIOUS TRACK');
-    loadTrack(next, { direction: 'prev' }).then(() => { if (isPlaying && tracks[next]?.url) audio.play().catch(() => {}); });
+    loadTrack(next, { direction: 'prev' }).then((ok) => {
+      if (ok && isPlaying) audio.play().catch(() => {});
+    });
   }
 }
 
@@ -718,11 +802,15 @@ function nextTrack(auto = false) {
   if (next >= 0) {
     const isWrap = currentIndex === tracks.length - 1 && next === 0 && !auto;
     flashStatus(isWrap ? 'FIRST TRACK' : 'NEXT TRACK');
-    loadTrack(next, { direction: 'next' }).then(() => { if (isPlaying && tracks[next]?.url) audio.play().catch(() => {}); });
+    loadTrack(next, { direction: 'next' }).then((ok) => {
+      if (ok && isPlaying) audio.play().catch(() => {});
+    });
   } else {
     isPlaying = false; updatePlayIcon(); audio.pause(); flashStatus('END OF PLAYLIST');
   }
 }
+
+/* ================= 列表渲染 & 交互 ================= */
 
 function renderPlaylist() {
   if (tracks.length === 0) { playlistEl.innerHTML = `<div class="empty-tip">还没有歌曲<br>点击下方添加本地音乐</div>`; return; }
@@ -746,7 +834,7 @@ playlistEl.addEventListener('click', (e) => {
   if (!item || !playlistEl.contains(item)) return;
   const idx = parseInt(item.dataset.index, 10);
   if (Number.isNaN(idx)) return;
-  loadTrack(idx).then(() => { audio.play().catch(() => {}); closeSheetPanel(); });
+  loadTrack(idx).then((ok) => { if (ok) audio.play().catch(() => {}); closeSheetPanel(); });
 });
 
 function renderLibrary() {
@@ -768,15 +856,24 @@ libraryList.addEventListener('click', (e) => {
   if (!item || !libraryList.contains(item)) return;
   const idx = parseInt(item.dataset.index, 10);
   if (Number.isNaN(idx)) return;
-  loadTrack(idx).then(() => audio.play().catch(() => {}));
+  loadTrack(idx).then((ok) => { if (ok) audio.play().catch(() => {}); });
 });
+
+/* 搜索区按钮状态用 Set 缓存，避免 O(n²) */
+function buildAddedOnlineSet() {
+  const s = new Set();
+  tracks.forEach((t) => { if (t.isOnline && t.id) s.add(`${t.source || 'netease'}:${t.id}`); });
+  return s;
+}
 
 function renderSearchResults(list) {
   lastSearchList = Array.isArray(list) ? list : [];
   if (!list || list.length === 0) { searchResults.innerHTML = `<div class="empty-tip">没有找到相关歌曲</div>`; return; }
+  const addedSet = buildAddedOnlineSet();
   searchResults.innerHTML = list.map((item, i) => {
     const artist = Array.isArray(item.artist) ? item.artist.join(' / ') : (item.artist || '未知');
-    const isAdded = tracks.some(t => t.isOnline && t.id === item.id && t.source === (item.source || sourceSelect.value));
+    const src = item.source || sourceSelect.value;
+    const isAdded = addedSet.has(`${src}:${item.id}`);
     return `
       <div class="track-item online" data-search-index="${i}">
         <div class="track-info-list">
@@ -791,12 +888,13 @@ function renderSearchResults(list) {
 
 function syncSearchButtons() {
   if (!lastSearchList.length) return;
+  const addedSet = buildAddedOnlineSet();
   const btns = searchResults.querySelectorAll('.add-btn-row');
   btns.forEach(btn => {
     const idx = parseInt(btn.dataset.searchIndex, 10);
     if (isNaN(idx) || !lastSearchList[idx]) return;
     const item = lastSearchList[idx];
-    const isAdded = tracks.some(t => t.isOnline && t.id === item.id && t.source === (item.source || sourceSelect.value));
+    const isAdded = addedSet.has(`${item.source || sourceSelect.value}:${item.id}`);
     if (isAdded) { btn.textContent = '✓'; btn.style.color = '#30d158'; }
     else { btn.textContent = '＋'; btn.style.color = ''; }
   });
@@ -809,7 +907,8 @@ searchResults.addEventListener('click', (e) => {
   if (Number.isNaN(idx) || !lastSearchList[idx]) return;
   if (addBtn) {
     const searchItem = lastSearchList[idx];
-    const isAdded = tracks.some(t => t.isOnline && t.id === searchItem.id && t.source === (searchItem.source || sourceSelect.value));
+    const src = searchItem.source || sourceSelect.value;
+    const isAdded = tracks.some(t => t.isOnline && t.id === searchItem.id && t.source === src);
     if (isAdded) removeOnlineTrack(searchItem); else addOnlineTrack(searchItem);
     syncSearchButtons();
   } else { playOnlineTrack(lastSearchList[idx]); }
@@ -837,7 +936,7 @@ async function removeTrackFromList(index, skipConfirm = false) {
   const track = tracks[index];
   if (!skipConfirm && !confirm(`确定从播放列表中移除「${track.name}」吗？`)) return;
   if (track.url && String(track.url).startsWith('blob:')) {
-    try { URL.revokeObjectURL(track.url); } catch (_) {} 
+    try { URL.revokeObjectURL(track.url); } catch (_) {}
   }
   tracks.splice(index, 1);
   if (tracks.length === 0) {
@@ -852,7 +951,7 @@ async function removeTrackFromList(index, skipConfirm = false) {
     if (index === currentIndex) {
       if (currentIndex >= tracks.length) currentIndex = tracks.length - 1;
       audio.pause();
-      loadTrack(currentIndex).then(() => { if (wasPlaying) audio.play().catch(()=>{}); });
+      loadTrack(currentIndex).then((ok) => { if (ok && wasPlaying) audio.play().catch(() => {}); });
     } else if (index < currentIndex) currentIndex--;
   }
   if (isShuffle) rebuildShuffle();
@@ -862,7 +961,11 @@ async function removeTrackFromList(index, skipConfirm = false) {
 async function playOnlineTrack(item) {
   addOnlineTrack(item);
   const idx = tracks.findIndex(t => t.isOnline && t.id === item.id && t.source === (item.source || sourceSelect.value));
-  if (idx >= 0) { await loadTrack(idx); audio.play().catch(() => {}); closeSheetPanel(); }
+  if (idx >= 0) {
+    const ok = await loadTrack(idx);
+    if (ok) audio.play().catch(() => {});
+    closeSheetPanel();
+  }
 }
 
 async function doSearch() {
@@ -897,6 +1000,8 @@ function switchTab(name) {
 tabLocal.addEventListener('click', () => switchTab('local'));
 tabFav?.addEventListener('click', () => switchTab('fav'));
 tabOnline.addEventListener('click', () => switchTab('online'));
+
+/* ================= 事件绑定 ================= */
 
 favBtn?.addEventListener('click', toggleFavorite);
 document.getElementById('playAllFavBtn')?.addEventListener('click', () => { haptic(12); playAllFavorites(); });
@@ -939,22 +1044,32 @@ window.addEventListener('orientationchange', () => {
   if (sheetPanel.classList.contains('show')) setTimeout(positionSheet, 200);
 });
 
+/* ================= 进度条拖拽 ================= */
+
 let isDragging = false;
 progressBar.addEventListener('touchstart', startDrag, { passive: false });
 progressBar.addEventListener('mousedown', startDrag);
 function startDrag(e) { isDragging = true; updateProgressFromEvent(e); e.preventDefault(); }
+
+function setProgressPct(pct) {
+  progress.style.width = pct + '%';
+  progress.classList.toggle('is-zero', pct <= 0);
+}
+
 function updateProgressFromEvent(e) {
   const rect = progressBar.getBoundingClientRect();
   const clientX = e.touches ? e.touches[0].clientX : e.clientX;
   let percent = (clientX - rect.left) / rect.width;
   percent = Math.max(0, Math.min(1, percent));
-  progress.style.width = percent * 100 + '%';
+  setProgressPct(percent * 100);
   if (audio.duration) audio.currentTime = percent * audio.duration;
 }
 document.addEventListener('touchmove', (e) => { if (isDragging) { updateProgressFromEvent(e); e.preventDefault(); } }, { passive: false });
 document.addEventListener('mousemove', (e) => { if (isDragging) updateProgressFromEvent(e); });
 document.addEventListener('touchend', () => { isDragging = false; });
 document.addEventListener('mouseup', () => { isDragging = false; });
+
+/* ================= 轮盘调进度 ================= */
 
 let isScrubbing = false, lastAngle = 0, scrubStartTime = 0, wheelCx = 0, wheelCy = 0, rInner = 0, rOuter = 0;
 const wheelScrub = document.getElementById('wheelScrub');
@@ -995,7 +1110,7 @@ function onWheelMove(e) {
   const sensitivity = (audio.duration * 0.55) / (2 * Math.PI);
   const newTime = Math.max(0, Math.min(audio.duration, scrubStartTime + delta * sensitivity * 5.5));
   scrubStartTime = newTime; lastAngle = angle; audio.currentTime = newTime;
-  progress.style.width = (newTime / audio.duration) * 100 + '%';
+  setProgressPct((newTime / audio.duration) * 100);
   currentTimeEl.textContent = formatTime(newTime); e.preventDefault();
 }
 
@@ -1011,6 +1126,8 @@ document.addEventListener('mousemove', (e) => { if (isScrubbing) onWheelMove(e);
 document.addEventListener('touchend', onWheelEnd);
 document.addEventListener('mouseup', onWheelEnd);
 
+/* ================= audio 事件 ================= */
+
 audio.addEventListener('play', () => { consecutiveSkip = 0; isPlaying = true; updatePlayIcon(); });
 audio.addEventListener('pause', () => { isPlaying = false; updatePlayIcon(); });
 audio.addEventListener('ended', () => { if (repeatMode === 2) { audio.currentTime = 0; audio.play().catch(() => {}); } else nextTrack(true); });
@@ -1022,7 +1139,8 @@ audio.addEventListener('timeupdate', () => {
   requestAnimationFrame(() => {
     timeRafPending = false;
     if (isDragging || isScrubbing || !audio.duration) return;
-    progress.style.width = (audio.currentTime / audio.duration) * 100 + '%';
+    const pct = (audio.currentTime / audio.duration) * 100;
+    setProgressPct(pct);
     currentTimeEl.textContent = formatTime(audio.currentTime);
   });
 });
@@ -1041,6 +1159,8 @@ audio.addEventListener('error', () => {
   setTimeout(() => { if (currentIndex === failedIndex) skipFailedTrack('SKIP PLAY ERROR'); }, 0);
 });
 
+/* ================= 本地文件导入 ================= */
+
 fileInput.addEventListener('change', async (e) => {
   const files = Array.from(e.target.files);
   if (files.length === 0) return;
@@ -1057,6 +1177,25 @@ fileInput.addEventListener('change', async (e) => {
   fileInput.value = '';
 });
 
+/* 压缩封面到 300px，避免 IndexedDB 里堆积超大的 base64 */
+function shrinkCover(dataUrl, max = 300) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const s = Math.min(1, max / Math.max(img.width, img.height));
+        const c = document.createElement('canvas');
+        c.width = Math.round(img.width * s);
+        c.height = Math.round(img.height * s);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        resolve(c.toDataURL('image/jpeg', 0.82));
+      } catch (_) { resolve(dataUrl); }
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
 function readMetadata(file, trackObj) {
   return new Promise((resolve) => {
     if (typeof jsmediatags === 'undefined') { resolve(); return; }
@@ -1067,12 +1206,17 @@ function readMetadata(file, trackObj) {
         if (tags.artist) trackObj.artist = tags.artist;
         if (tags.album) trackObj.album = tags.album;
         if (tags.picture) {
-          const { data, format } = tags.picture;
-          const CHUNK = 0x8000; let binary = '';
-          for (let i = 0; i < data.length; i += CHUNK) binary += String.fromCharCode.apply(null, data.subarray(i, i + CHUNK));
-          trackObj.cover = `data:${format};base64,${window.btoa(binary)}`;
+          try {
+            const { data, format } = tags.picture;
+            const CHUNK = 0x8000;
+            let binary = '';
+            for (let i = 0; i < data.length; i += CHUNK) binary += String.fromCharCode.apply(null, data.subarray(i, i + CHUNK));
+            const rawUrl = `data:${format};base64,${window.btoa(binary)}`;
+            shrinkCover(rawUrl, 300).then((cover) => { trackObj.cover = cover; resolve(); });
+          } catch (_) { resolve(); }
+        } else {
+          resolve();
         }
-        resolve();
       },
       onError: () => resolve()
     });
@@ -1081,6 +1225,18 @@ function readMetadata(file, trackObj) {
 
 document.addEventListener('contextmenu', (e) => { if (e.target.closest('input, textarea, select')) return; e.preventDefault(); });
 document.addEventListener('selectstart', (e) => { if (e.target.closest('input, textarea, select')) return; e.preventDefault(); });
+
+/* ================= 启动 ================= */
+
+const coverAnimSelect = document.getElementById('coverAnimSelect');
+if (coverAnimSelect) {
+  coverAnimSelect.value = coverAnimMode;
+  coverAnimSelect.addEventListener('change', () => {
+    coverAnimMode = coverAnimSelect.value;
+    try { localStorage.setItem('ipodCoverAnim', coverAnimMode); } catch (_) {}
+    applyCoverAnimClass(); haptic(10);
+  });
+}
 
 async function bootstrap() {
   loadSettings(); loadHistory(); loadFavorites();
@@ -1092,17 +1248,8 @@ async function bootstrap() {
   }
   updatePlayIcon(); updateModeIcons(); updateScrubToggle(); updateFavButton(); updateStatusHint(); applyCoverAnimClass(); applySheetPrefs();
   renderPlaylist(); renderLibrary(); renderFavList();
-  if (currentIndex >= 0 && tracks[currentIndex]) await loadTrack(currentIndex);
-}
-
-const coverAnimSelect = document.getElementById('coverAnimSelect');
-if (coverAnimSelect) {
-  coverAnimSelect.value = coverAnimMode;
-  coverAnimSelect.addEventListener('change', () => {
-    coverAnimMode = coverAnimSelect.value;
-    localStorage.setItem('ipodCoverAnim', coverAnimMode);
-    applyCoverAnimClass(); haptic(10);
-  });
+  /* deferOnline：恢复时只显示信息，不主动拉在线 URL，避免打开就自动播放/耗流量 */
+  if (currentIndex >= 0 && tracks[currentIndex]) await loadTrack(currentIndex, { deferOnline: true });
 }
 
 bootstrap();

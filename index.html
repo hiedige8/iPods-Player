@@ -4,12 +4,19 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="iPod">
   <meta name="theme-color" content="#e8e8ed">
   <title>iPod Music</title>
+
+  <!-- 图标 & manifest -->
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" sizes="180x180" href="icon-180.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+
   <link rel="stylesheet" href="style.css">
   <script defer src="https://cdnjs.cloudflare.com/ajax/libs/jsmediatags/3.9.5/jsmediatags.min.js"></script>
-  <link rel="apple-touch-icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxMDAgMTAwIj48cmVjdCB3aWR0aD0iMTAwIiBoZWlnaHQ9IjEwMCIgZmlsbD0iI2Y1ZjVmNyIgcng9IjIyIi8+PHBhdGggZD0iTTUwIDI1YzUgMCA5IDQgOSAxMCAwIDYtNCAxMC05IDEwLTUgMC05LTQtOS0xMCAwLTYgNC0xMCA5LTEweiIgZmlsbD0iIzFhMWExYyIvPjwvc3ZnPg==">
 </head>
 <body>
   <div class="app">
@@ -140,7 +147,8 @@
       <div class="tab-panel" id="panelOnline">
         <div class="search-box">
           <select id="sourceSelect" class="source-select"><option value="netease">网易云</option><option value="tencent">QQ音乐</option><option value="kuwo">酷我</option><option value="joox">JOOX</option><option value="tidal">Tidal</option><option value="ytmusic">YouTube Music</option></select>
-          <input type="search" id="searchInput" placeholder="搜索歌曲 / 歌手" enterkeyhint="search">
+          <input type="search" id="searchInput" placeholder="搜索歌曲 / 歌手"
+                 enterkeyhint="search" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
           <button id="searchBtn" class="search-btn">搜索</button>
         </div>
         <div class="search-status" id="searchStatus"></div>
@@ -148,7 +156,7 @@
       </div>
     </div>
   </div>
-  <audio id="audio"></audio>
+  <audio id="audio" preload="metadata" playsinline></audio>
   <script src="script.js"></script>
 </body>
 </html>

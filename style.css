@@ -167,7 +167,7 @@ body { padding: 0; overflow: hidden; }
   width: 12px; height: 12px; background: #fff; border-radius: 50%; box-shadow: 0 1px 4px rgba(0,0,0,0.25); border: 0.5px solid rgba(0,0,0,0.05);
   opacity: 1; transition: opacity 0.1s;
 }
-.progress[style*="width: 0%"]::after { opacity: 0; }
+.progress[style*="width: 0%"]
 
 .time-row { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; font-size: 10px; color: #8e8e93; font-variant-numeric: tabular-nums; }
 .screen-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; padding-top: 8px; border-top: 0.5px solid rgba(0,0,0,0.06); gap: 8px; }
