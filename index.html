@@ -10,8 +10,7 @@
   <meta name="theme-color" content="#e8e8ed">
   <title>iPod Music</title>
 
-  <!-- 图标 & manifest -->
-  <!--link rel="manifest" href="manifest.webmanifest"-->
+  <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" sizes="180x180" href="icon-180.png">
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
 
@@ -36,21 +35,31 @@
           </div>
 
           <div class="now-playing" id="nowPlaying">
-            <div class="cover-wrap">
-              <div class="cover-box" id="coverBox">
-                <img id="coverImg" alt="">
-                <div class="cover-placeholder" id="coverPlaceholder">
-                  <svg class="apple-logo" viewBox="0 0 24 24" width="40" height="40" fill="currentColor" opacity="0.28">
-                    <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.22-1.98 1.08-3.13-1.05.04-2.31.7-3.06 1.58-.67.78-1.25 2.03-1.09 3.22 1.15.09 2.33-.58 3.07-1.67z"/>
-                  </svg>
+            <!-- 封面及音质模块 -->
+            <div class="cover-col">
+              <div class="cover-wrap">
+                <div class="cover-box" id="coverBox">
+                  <img id="coverImg" alt="">
+                  <div class="cover-placeholder" id="coverPlaceholder">
+                    <svg class="apple-logo" viewBox="0 0 24 24" width="40" height="40" fill="currentColor" opacity="0.28">
+                      <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.22-1.98 1.08-3.13-1.05.04-2.31.7-3.06 1.58-.67.78-1.25 2.03-1.09 3.22 1.15.09 2.33-.58 3.07-1.67z"/>
+                    </svg>
+                  </div>
                 </div>
               </div>
+              <span class="quality-tag" id="qualityTag" style="display:none;">320K</span>
             </div>
+            
+            <!-- 右侧信息及歌词 -->
             <div class="meta">
               <div class="now-label">NOW PLAYING</div>
               <div class="track-title" id="title">选择音乐</div>
               <div class="track-artist" id="artist">点击 MENU 添加</div>
               <div class="track-album" id="album"></div>
+              
+              <div class="lyrics-box" id="lyricsBox">
+                <div class="lyrics-scroll" id="lyricsScroll"></div>
+              </div>
             </div>
           </div>
 
@@ -147,6 +156,11 @@
       <div class="tab-panel" id="panelOnline">
         <div class="search-box">
           <select id="sourceSelect" class="source-select"><option value="netease">网易云</option><option value="tencent">QQ音乐</option><option value="kuwo">酷我</option><option value="joox">JOOX</option><option value="tidal">Tidal</option><option value="ytmusic">YouTube Music</option></select>
+          <select id="searchQualitySelect" class="source-select" style="max-width: 65px;">
+            <option value="128">128K</option>
+            <option value="320" selected>320K</option>
+            <option value="999">无损</option>
+          </select>
           <input type="search" id="searchInput" placeholder="搜索歌曲 / 歌手"
                  enterkeyhint="search" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
           <button id="searchBtn" class="search-btn">搜索</button>

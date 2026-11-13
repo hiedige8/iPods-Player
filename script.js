@@ -29,6 +29,7 @@ const wheelOuter = document.getElementById('wheelOuter');
 const searchInput = document.getElementById('searchInput');
 const searchBtn = document.getElementById('searchBtn');
 const sourceSelect = document.getElementById('sourceSelect');
+const searchQualitySelect = document.getElementById('searchQualitySelect');
 const searchResults = document.getElementById('searchResults');
 const searchStatus = document.getElementById('searchStatus');
 const tabLocal = document.getElementById('tabLocal');
@@ -49,6 +50,10 @@ const importFavInput = document.getElementById('importFavInput');
 const sheetSizeBtn = document.getElementById('sheetSizeBtn');
 const sheetBgBtn = document.getElementById('sheetBgBtn');
 
+const qualityTag = document.getElementById('qualityTag');
+const lyricsBox = document.getElementById('lyricsBox');
+const lyricsScroll = document.getElementById('lyricsScroll');
+
 const API_BASE = 'https://music-api.gdstudio.xyz/api.php';
 
 let tracks = [];
@@ -67,6 +72,10 @@ let sheetTransparent = false;
 try {
   sheetFullscreen = localStorage.getItem('ipodSheetFullscreen') === 'true';
   sheetTransparent = localStorage.getItem('ipodSheetTransparent') === 'true';
+  if (searchQualitySelect) {
+    const savedQ = localStorage.getItem('ipodSearchQuality');
+    if (savedQ) searchQualitySelect.value = savedQ;
+  }
 } catch (_) {}
 
 const DB_NAME = 'ipodMusicDB';
@@ -76,15 +85,12 @@ const HISTORY_KEY = 'ipodPlayHistory';
 const FAV_KEY = 'ipodFavorites';
 
 /* ================= 数据库 ================= */
-
 function openDB() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, 1);
     req.onupgradeneeded = () => {
       const db = req.result;
-      if (!db.objectStoreNames.contains(DB_STORE)) {
-        db.createObjectStore(DB_STORE, { keyPath: 'key' });
-      }
+      if (!db.objectStoreNames.contains(DB_STORE)) db.createObjectStore(DB_STORE, { keyPath: 'key' });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -96,7 +102,8 @@ async function saveTracksToDB() {
     const db = await openDB();
     const payload = tracks.map((t, i) => ({
       key: i, name: t.name, artist: t.artist || '', album: t.album || '',
-      duration: t.duration || null, cover: t.cover || null,
+      duration: t.duration || null, cover: t.cover || null, quality: t.quality || '320',
+      lyricText: t.lyricText || null,
       isOnline: !!t.isOnline, id: t.id || null, source: t.source || null, pic_id: t.pic_id || null,
       blob: (!t.isOnline && t.blob) ? t.blob : null
     }));
@@ -109,9 +116,7 @@ async function saveTracksToDB() {
       tx.onerror = () => reject(tx.error);
     });
     db.close();
-  } catch (err) {
-    console.warn('保存播放列表失败', err);
-  }
+  } catch (err) { console.warn('保存失败', err); }
 }
 
 async function loadTracksFromDB() {
@@ -129,27 +134,127 @@ async function loadTracksFromDB() {
       const track = {
         name: row.name, artist: row.artist, album: row.album, duration: row.duration,
         cover: row.cover, isOnline: row.isOnline, id: row.id, source: row.source,
-        pic_id: row.pic_id, url: null, blob: row.blob || null
+        pic_id: row.pic_id, url: null, blob: row.blob || null,
+        quality: row.quality || '320', lyricText: row.lyricText || null
       };
-      if (!track.isOnline && track.blob) {
-        track.url = URL.createObjectURL(track.blob);
-      }
+      if (track.lyricText) track.lyricLines = parseLrc(track.lyricText);
+      if (!track.isOnline && track.blob) track.url = URL.createObjectURL(track.blob);
       return track;
     });
-  } catch (err) {
-    console.warn('读取播放列表失败', err);
-    return [];
+  } catch (err) { return []; }
+}
+
+/* ================= LRC 解析 & 渲染 ================= */
+function parseLrc(lrcText) {
+  if (!lrcText) return [];
+  const lines = lrcText.split('\n');
+  const result = [];
+  const timeReg = /\[(\d{2}):(\d{2})(?:\.(\d{2,3}))?\]/;
+  
+  for (let line of lines) {
+    const match = timeReg.exec(line);
+    if (match) {
+      const min = parseInt(match[1], 10);
+      const sec = parseInt(match[2], 10);
+      const ms = match[3] ? parseInt(match[3], 10) : 0;
+      const time = min * 60 + sec + (ms / (match[3] && match[3].length === 3 ? 1000 : 100));
+      const text = line.replace(/\[\d{2}:\d{2}(?:\.\d{2,3})?\]/g, '').trim();
+      if (text) result.push({ time, text });
+    }
+  }
+  return result.sort((a, b) => a.time - b.time);
+}
+
+function renderLyrics(track) {
+  if (!lyricsScroll || !lyricsBox) return;
+  lyricsScroll.innerHTML = '';
+  lyricsScroll.style.transform = `translateY(0px)`;
+  lyricsScroll.dataset.activeIdx = '-1';
+  if (lyricsBox) lyricsBox.dataset.lastProgress = '';
+
+  if (!track || !track.lyricLines || track.lyricLines.length === 0) {
+    lyricsScroll.innerHTML = '<div class="lyrics-empty">暂无歌词</div>';
+    return;
+  }
+
+  const lines = track.lyricLines.filter(l => l.text.trim() !== '');
+  track.lyricLines = lines;
+
+  const fragment = document.createDocumentFragment();
+  lines.forEach((line) => {
+    const div = document.createElement('div');
+    div.className = 'lyric-line';
+    div.textContent = line.text;
+    fragment.appendChild(div);
+  });
+  lyricsScroll.appendChild(fragment);
+}
+
+let lastActiveIdx = -1;
+function updateLyrics(currTime) {
+  const track = tracks[currentIndex];
+  if (!track || !track.lyricLines || track.lyricLines.length === 0) return;
+
+  const lines = track.lyricLines;
+  let activeIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (currTime >= lines[i].time) activeIdx = i;
+    else break;
+  }
+
+  const items = lyricsScroll.querySelectorAll('.lyric-line');
+  if (items.length === 0 || items.length !== lines.length) return;
+
+  // 切换行时清理与滚动
+  if (activeIdx !== lastActiveIdx) {
+    items.forEach((item) => {
+      item.classList.remove('active');
+      item.style.setProperty('--progress', '0%');
+    });
+    
+    if (activeIdx >= 0 && activeIdx < items.length) {
+      items[activeIdx].classList.add('active');
+      
+      const activeItem = items[activeIdx];
+      const itemTop = activeItem.offsetTop;
+      const boxHeight = lyricsBox.clientHeight;
+      const offsetY = itemTop - (boxHeight / 2) + (activeItem.clientHeight / 2);
+      
+      lyricsScroll.style.transform = `translateY(-${offsetY}px)`;
+    } else if (activeIdx === -1) {
+      lyricsScroll.style.transform = `translateY(0px)`;
+    }
+    lastActiveIdx = activeIdx;
+  }
+
+  // 逐字高亮计算
+  if (activeIdx >= 0 && activeIdx < items.length) {
+    const currentLine = lines[activeIdx];
+    let nextTime;
+    if (activeIdx < lines.length - 1) {
+      nextTime = lines[activeIdx + 1].time;
+    } else {
+      nextTime = audio.duration && !isNaN(audio.duration) ? audio.duration : currentLine.time + 5;
+    }
+    
+    const duration = nextTime - currentLine.time;
+    if (duration > 0) {
+      let progress = (currTime - currentLine.time) / duration;
+      progress = Math.max(0, Math.min(1, progress));
+      
+      const pStr = (progress * 100).toFixed(1) + '%';
+      const activeItem = items[activeIdx];
+      
+      if (activeItem.dataset.progress !== pStr) {
+        activeItem.style.setProperty('--progress', pStr);
+        activeItem.dataset.progress = pStr;
+      }
+    }
   }
 }
 
-/* ================= 设置 / 历史 / 收藏 ================= */
-
-function saveSettings() {
-  try {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ currentIndex, isShuffle, repeatMode, scrubEnabled }));
-  } catch (_) {}
-}
-
+/* ================= 设置 / 其他 ================= */
+function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ currentIndex, isShuffle, repeatMode, scrubEnabled })); } catch (_) {} }
 function loadSettings() {
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
@@ -162,12 +267,8 @@ function loadSettings() {
   } catch (_) {}
 }
 
-function saveHistory() {
-  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(playHistory.slice(0, 50))); } catch (_) {}
-}
-function loadHistory() {
-  try { const raw = localStorage.getItem(HISTORY_KEY); if (raw) playHistory = JSON.parse(raw) || []; } catch (_) { playHistory = []; }
-}
+function saveHistory() { try { localStorage.setItem(HISTORY_KEY, JSON.stringify(playHistory.slice(0, 50))); } catch (_) {} }
+function loadHistory() { try { const raw = localStorage.getItem(HISTORY_KEY); if (raw) playHistory = JSON.parse(raw) || []; } catch (_) { playHistory = []; } }
 function pushHistory(track) {
   if (!track) return;
   playHistory = playHistory.filter((h) => !(h.name === track.name && h.artist === track.artist && !!h.isOnline === !!track.isOnline));
@@ -178,47 +279,18 @@ function pushHistory(track) {
 
 let persistTimer = null;
 function persistAll() {
-  saveSettings();
-  saveFavorites();
+  saveSettings(); saveFavorites();
   if (persistTimer) clearTimeout(persistTimer);
-  persistTimer = setTimeout(() => {
-    persistTimer = null;
-    saveTracksToDB();
-  }, 400);
+  persistTimer = setTimeout(() => { persistTimer = null; saveTracksToDB(); }, 400);
 }
-window.addEventListener('pagehide', () => {
-  if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; saveTracksToDB(); }
-});
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden' && persistTimer) {
-    clearTimeout(persistTimer); persistTimer = null; saveTracksToDB();
-  }
-});
+window.addEventListener('pagehide', () => { if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; saveTracksToDB(); } });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && persistTimer) { clearTimeout(persistTimer); persistTimer = null; saveTracksToDB(); } });
 
-function trackKey(t) {
-  if (!t) return '';
-  if (t.isOnline && t.id) return `online:${t.source || 'netease'}:${t.id}`;
-  return `local:${t.name || ''}|${t.artist || ''}`;
-}
-
+function trackKey(t) { return t ? (t.isOnline && t.id ? `online:${t.source || 'netease'}:${t.id}` : `local:${t.name || ''}|${t.artist || ''}`) : ''; }
 function saveFavorites() { try { localStorage.setItem(FAV_KEY, JSON.stringify(favorites)); } catch (_) {} }
-function loadFavorites() {
-  try { const raw = localStorage.getItem(FAV_KEY); favorites = raw ? JSON.parse(raw) : []; if (!Array.isArray(favorites)) favorites = []; } catch (_) { favorites = []; }
-}
-
-function isFavorite(track) {
-  if (!track) return false;
-  const k = trackKey(track);
-  return favorites.some((f) => trackKey(f) === k);
-}
-
-function toFavItem(track) {
-  return {
-    name: track.name, artist: track.artist || '', album: track.album || '',
-    cover: track.cover || null, isOnline: !!track.isOnline, id: track.id || null,
-    source: track.source || null, pic_id: track.pic_id || null, duration: track.duration || null
-  };
-}
+function loadFavorites() { try { const raw = localStorage.getItem(FAV_KEY); favorites = raw ? JSON.parse(raw) : []; if (!Array.isArray(favorites)) favorites = []; } catch (_) { favorites = []; } }
+function isFavorite(track) { if (!track) return false; return favorites.some((f) => trackKey(f) === trackKey(track)); }
+function toFavItem(track) { return { name: track.name, artist: track.artist || '', album: track.album || '', cover: track.cover || null, isOnline: !!track.isOnline, id: track.id || null, source: track.source || null, pic_id: track.pic_id || null, duration: track.duration || null }; }
 
 function updateFavButton() {
   if (!favBtn) return;
@@ -226,10 +298,7 @@ function updateFavButton() {
   favBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
   const outline = favBtn.querySelector('.heart-outline');
   const filled = favBtn.querySelector('.heart-filled');
-  if (outline && filled) {
-    outline.style.display = on ? 'none' : 'block';
-    filled.style.display = on ? 'block' : 'none';
-  }
+  if (outline && filled) { outline.style.display = on ? 'none' : 'block'; filled.style.display = on ? 'block' : 'none'; }
 }
 
 function toggleFavorite() {
@@ -281,11 +350,7 @@ async function playAllFavorites() {
     const exist = tracks.findIndex((t) => trackKey(t) === trackKey(fav));
     if (exist >= 0) { if (firstIdx < 0) firstIdx = exist; continue; }
     if (fav.isOnline && fav.id) {
-      tracks.push({
-        id: fav.id, name: fav.name, artist: fav.artist || '', album: fav.album || '',
-        pic_id: fav.pic_id || null, source: fav.source || 'netease',
-        isOnline: true, url: null, cover: fav.cover || null, duration: fav.duration || null
-      });
+      tracks.push({ id: fav.id, name: fav.name, artist: fav.artist || '', album: fav.album || '', pic_id: fav.pic_id || null, source: fav.source || 'netease', quality: '320', isOnline: true, url: null, cover: fav.cover || null, duration: fav.duration || null });
       if (firstIdx < 0) firstIdx = tracks.length - 1;
     } else skippedLocal++;
   }
@@ -307,11 +372,7 @@ async function playFavorite(item) {
     closeSheetPanel(); return;
   }
   if (item.isOnline && item.id) {
-    tracks.push({
-      id: item.id, name: item.name, artist: item.artist, album: item.album || '',
-      pic_id: item.pic_id, source: item.source || 'netease',
-      isOnline: true, url: null, cover: item.cover || null, duration: item.duration || null
-    });
+    tracks.push({ id: item.id, name: item.name, artist: item.artist, album: item.album || '', pic_id: item.pic_id, source: item.source || 'netease', quality: '320', isOnline: true, url: null, cover: item.cover || null, duration: item.duration || null });
     if (isShuffle) rebuildShuffle();
     persistAll(); renderPlaylist(); renderLibrary();
     const ok = await loadTrack(tracks.length - 1);
@@ -326,10 +387,8 @@ function exportFavorites() {
   const data = { type: 'ipod-favorites', version: 1, exportedAt: new Date().toISOString(), favorites };
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = `ipod-favorites-${new Date().toISOString().slice(0, 10)}.json`;
-  a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-  flashStatus('EXPORTED');
+  const a = document.createElement('a'); a.href = url; a.download = `ipod-favorites-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); flashStatus('EXPORTED');
 }
 
 function importFavoritesFile(file) {
@@ -342,11 +401,7 @@ function importFavoritesFile(file) {
       let added = 0;
       list.forEach((item) => {
         if (!item || !item.name) return;
-        const norm = toFavItem({
-          name: item.name, artist: item.artist || '', album: item.album || '',
-          cover: item.cover || null, isOnline: item.isOnline !== false && !!(item.id || item.isOnline),
-          id: item.id || null, source: item.source || 'netease', pic_id: item.pic_id || null, duration: item.duration || null
-        });
+        const norm = toFavItem({ name: item.name, artist: item.artist || '', album: item.album || '', cover: item.cover || null, isOnline: item.isOnline !== false && !!(item.id || item.isOnline), id: item.id || null, source: item.source || 'netease', pic_id: item.pic_id || null, duration: item.duration || null });
         if (!favorites.some((f) => trackKey(f) === trackKey(norm))) { favorites.push(norm); added++; }
       });
       saveFavorites(); renderFavList(); updateFavButton();
@@ -359,9 +414,7 @@ function importFavoritesFile(file) {
 async function clearAllPlayData() {
   if (!confirm('确定清除全部播放数据？\n包括：播放列表、本地缓存歌曲、收藏、设置与播放记录。')) return;
   if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; }
-  tracks.forEach((t) => {
-    if (t.url && String(t.url).startsWith('blob:')) { try { URL.revokeObjectURL(t.url); } catch (_) {} }
-  });
+  tracks.forEach((t) => { if (t.url && String(t.url).startsWith('blob:')) { try { URL.revokeObjectURL(t.url); } catch (_) {} } });
   tracks = []; currentIndex = -1; isPlaying = false; isShuffle = false; repeatMode = 0; scrubEnabled = true; shuffledOrder = []; playHistory = []; favorites = [];
   try {
     const db = await openDB();
@@ -375,30 +428,21 @@ async function clearAllPlayData() {
   try { localStorage.removeItem(SETTINGS_KEY); localStorage.removeItem(HISTORY_KEY); localStorage.removeItem(FAV_KEY); } catch (_) {}
   audio.pause(); audio.removeAttribute('src');
   updatePlayIcon(); updateModeIcons(); updateScrubToggle(); updateFavButton(); updateStatusHint();
-  renderPlaylist(); renderLibrary(); renderFavList(); syncSearchButtons();
+  renderPlaylist(); renderLibrary(); renderFavList(); syncSearchButtons(); renderLyrics(null); lastActiveIdx = -1;
   flashStatus('CLEARED');
 }
 
 /* ================= 工具函数 ================= */
-
-function formatTime(sec) {
-  if (!sec || isNaN(sec)) return '0:00';
-  const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}
-
+function formatTime(sec) { if (!sec || isNaN(sec)) return '0:00'; const m = Math.floor(sec / 60), s = Math.floor(sec % 60); return `${m}:${s.toString().padStart(2, '0')}`; }
 const HTML_ESCAPE = { '&': '&amp;', '<': '&lt;', '>': '&gt;' };
 function escapeHtml(text) { return String(text == null ? '' : text).replace(/[&<>]/g, (c) => HTML_ESCAPE[c]); }
-
 const ICON_SHUFFLE = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 3h5v5"/><path d="M4 20 21 3"/><path d="M21 16v5h-5"/><path d="M15 15l6 6"/><path d="M4 4l5 5"/></svg>';
 const ICON_REPEAT = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></svg>';
 const ICON_REPEAT_ONE = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/><path d="M10.5 9.5 12.5 8v6"/></svg>';
 
 function updateModeIcons() {
-  shuffleIcon.classList.toggle('active', isShuffle);
-  shuffleBtn.classList.toggle('active', isShuffle);
-  repeatIcon.classList.toggle('active', repeatMode > 0);
-  repeatBtn.classList.toggle('active', repeatMode > 0);
+  shuffleIcon.classList.toggle('active', isShuffle); shuffleBtn.classList.toggle('active', isShuffle);
+  repeatIcon.classList.toggle('active', repeatMode > 0); repeatBtn.classList.toggle('active', repeatMode > 0);
   shuffleIcon.innerHTML = ICON_SHUFFLE; shuffleBtn.innerHTML = ICON_SHUFFLE;
   const repeatSvg = repeatMode === 2 ? ICON_REPEAT_ONE : ICON_REPEAT;
   repeatIcon.innerHTML = repeatSvg; repeatBtn.innerHTML = repeatSvg;
@@ -425,18 +469,9 @@ function updateMediaSession() {
   if (!('mediaSession' in navigator)) return;
   try {
     const track = currentIndex >= 0 ? tracks[currentIndex] : null;
-    
-    // 补全了图片的 type，避免 iOS 锁屏崩溃
     let artwork = [];
-    if (track && track.cover) {
-      const type = track.cover.startsWith('data:image/png') ? 'image/png' : 'image/jpeg';
-      artwork = [{ src: track.cover, sizes: '512x512', type: type }];
-    }
-
-    navigator.mediaSession.metadata = track ? new MediaMetadata({
-      title: track.name, artist: track.artist || '未知艺术家', album: track.album || '',
-      artwork: artwork
-    }) : null;
+    if (track && track.cover) artwork = [{ src: track.cover, sizes: '512x512', type: track.cover.startsWith('data:image/png') ? 'image/png' : 'image/jpeg' }];
+    navigator.mediaSession.metadata = track ? new MediaMetadata({ title: track.name, artist: track.artist || '未知艺术家', album: track.album || '', artwork: artwork }) : null;
     navigator.mediaSession.setActionHandler('play', togglePlay);
     navigator.mediaSession.setActionHandler('pause', togglePlay);
     navigator.mediaSession.setActionHandler('previoustrack', prevTrack);
@@ -461,11 +496,47 @@ function flashStatus(text, ms = 1100) {
   statusHintTimer = setTimeout(() => { statusHintTimer = null; updateStatusHint(); }, ms);
 }
 
-/* ================= 封面动画 ================= */
+function updateQualityTag() {
+  if (!qualityTag) return;
+  const track = currentIndex >= 0 ? tracks[currentIndex] : null;
+  if (!track || !track.isOnline) { qualityTag.style.display = 'none'; return; }
+  qualityTag.style.display = 'inline-block';
+  
+  let q = track.quality || '320';
+  let label = '320K';
+  if (q === '128') label = '128K';
+  if (q === '999') label = '无损';
+  if (track.actualBr) {
+    if (track.actualBr >= 999) label = '无损';
+    else label = track.actualBr + 'K';
+  }
+  qualityTag.textContent = label;
+}
 
+qualityTag?.addEventListener('click', async (e) => {
+  e.stopPropagation();
+  const track = currentIndex >= 0 ? tracks[currentIndex] : null;
+  if (!track || !track.isOnline) return;
+
+  const qualities = ['128', '320', '999'];
+  let idx = qualities.indexOf(track.quality || '320');
+  idx = (idx + 1) % qualities.length;
+  track.quality = qualities[idx];
+
+  haptic(10);
+  if (isPlaying) {
+    const currTime = audio.currentTime;
+    track.url = null;
+    const ok = await loadTrack(currentIndex);
+    if (ok) { audio.currentTime = currTime; audio.play().catch(() => {}); }
+  } else {
+    updateQualityTag();
+  }
+});
+
+/* ================= 封面动画 ================= */
 let coverAnimMode = 'flip';
 try { coverAnimMode = localStorage.getItem('ipodCoverAnim') || 'flip'; } catch (_) {}
-
 let loadSeq = 0;
 
 function applyCoverAnimClass() {
@@ -494,7 +565,6 @@ function animateCoverChange(applyContent, direction = 'next') {
 
     coverBox.classList.remove('cover-in-prev', 'cover-in-next', 'cover-out-prev', 'cover-out-next');
     coverBox.classList.add(outClass);
-
     const onOut = () => {
       coverBox.removeEventListener('animationend', onOut);
       applyOnce();
@@ -509,19 +579,13 @@ function animateCoverChange(applyContent, direction = 'next') {
 
 function updateScrubToggle() { if (scrubToggle) scrubToggle.setAttribute('aria-pressed', scrubEnabled ? 'true' : 'false'); }
 
-/* ================= 弹层位置 (键盘深度适配) ================= */
-
+/* ================= 弹层位置 ================= */
 function positionSheet() {
   if (!sheetEl) return;
-
   const vv = window.visualViewport;
   const vh = (vv && vv.height) || window.innerHeight || document.documentElement.clientHeight;
-  
-  // 判断键盘是否弹起
   const isKeyboardOpen = vv && (window.innerHeight - vv.height > 150);
 
-  // 核心修改：如果键盘弹起，把整个遮罩层的高度写死到"可视区域"的高度
-  // 这样即使 iOS 向上推动了整个 body，遮罩层也只会紧贴键盘上方
   if (vv && sheetPanel.classList.contains('show')) {
     sheetPanel.style.height = `${vh}px`;
     sheetPanel.style.top = `${vv.offsetTop}px`;
@@ -530,57 +594,31 @@ function positionSheet() {
 
   if (sheetFullscreen) {
     sheetEl.style.removeProperty('--sheet-height');
-    if (isKeyboardOpen) {
-      sheetEl.style.setProperty('--sheet-height', `${vh}px`);
-    }
+    if (isKeyboardOpen) sheetEl.style.setProperty('--sheet-height', `${vh}px`);
     return;
   }
+  if (isKeyboardOpen) { sheetEl.style.setProperty('--sheet-height', `${vh * 0.85}px`); return; }
 
-  if (isKeyboardOpen) {
-    // 键盘弹起状态，面板占据可视区的 85%，保证搜索框在可视范围内
-    sheetEl.style.setProperty('--sheet-height', `${vh * 0.85}px`);
-    return;
-  }
-
-  // 正常无键盘状态
   const screenEl = document.querySelector('.screen');
   const ipodEl = document.querySelector('.ipod');
   if (!screenEl || !ipodEl) return;
-
   const rect = screenEl.getBoundingClientRect();
   const ipodRect = ipodEl.getBoundingClientRect();
   let offset = rect.top - ipodRect.top;
   if (offset < 0) offset = 17;
-
   let h = vh - rect.bottom - offset;
-  const min = 320;
-  const max = Math.max(min, vh * 0.9);
+  const min = 320, max = Math.max(min, vh * 0.9);
   if (!isFinite(h) || h <= 0) h = Math.min(vh * 0.6, max);
   h = Math.max(min, Math.min(max, h));
-  
   sheetEl.style.setProperty('--sheet-height', h + 'px');
 }
 
 if (window.visualViewport) {
-  window.visualViewport.addEventListener('resize', () => {
-    if (sheetPanel.classList.contains('show')) positionSheet();
-  });
-  window.visualViewport.addEventListener('scroll', () => {
-    if (sheetPanel.classList.contains('show')) positionSheet();
-  });
+  window.visualViewport.addEventListener('resize', () => { if (sheetPanel.classList.contains('show')) positionSheet(); });
+  window.visualViewport.addEventListener('scroll', () => { if (sheetPanel.classList.contains('show')) positionSheet(); });
 }
-
-// 防止部分 iOS 键盘弹出延迟导致监听失效
-document.addEventListener('focusin', (e) => {
-  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
-    setTimeout(() => { if (sheetPanel.classList.contains('show')) positionSheet(); }, 250);
-  }
-});
-document.addEventListener('focusout', (e) => {
-  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
-    setTimeout(() => { if (sheetPanel.classList.contains('show')) positionSheet(); }, 250);
-  }
-});
+document.addEventListener('focusin', (e) => { if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') setTimeout(() => { if (sheetPanel.classList.contains('show')) positionSheet(); }, 250); });
+document.addEventListener('focusout', (e) => { if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') setTimeout(() => { if (sheetPanel.classList.contains('show')) positionSheet(); }, 250); });
 
 function applySheetPrefs() {
   if (!sheetPanel) return;
@@ -594,11 +632,9 @@ function applySheetPrefs() {
 function haptic(ms = 10) { try { if (navigator.vibrate) navigator.vibrate(ms); } catch (_) {} }
 
 /* ================= 在线音源 ================= */
-
 const ALL_SOURCES = [
-  { value: 'netease', name: '网易云' }, { value: 'tencent', name: 'QQ音乐' },
-  { value: 'kuwo', name: '酷我' }, { value: 'joox', name: 'JOOX' },
-  { value: 'tidal', name: 'Tidal' }, { value: 'ytmusic', name: 'YouTube Music' }
+  { value: 'netease', name: '网易云' }, { value: 'tencent', name: 'QQ音乐' }, { value: 'kuwo', name: '酷我' }, 
+  { value: 'joox', name: 'JOOX' }, { value: 'tidal', name: 'Tidal' }, { value: 'ytmusic', name: 'YouTube Music' }
 ];
 
 function rebuildSourceSelect(list) {
@@ -610,8 +646,7 @@ function rebuildSourceSelect(list) {
 }
 
 async function testSource(source) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
+  const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 8000);
   try {
     const url = new URL(API_BASE);
     url.searchParams.set('types', 'search'); url.searchParams.set('source', source);
@@ -675,8 +710,7 @@ async function checkAllSources() {
 async function apiFetch(params) {
   const url = new URL(API_BASE);
   Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 12000);
+  const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 12000);
   try {
     const res = await fetch(url.toString(), { signal: controller.signal });
     if (!res.ok) throw new Error('网络错误 ' + res.status);
@@ -685,14 +719,11 @@ async function apiFetch(params) {
 }
 
 async function searchSongs(keyword, source = 'netease', count = 20, page = 1) { return apiFetch({ types: 'search', source, name: keyword, count, pages: page }); }
-async function getPlayUrl(id, source = 'netease', br = 320) { const data = await apiFetch({ types: 'url', source, id, br }); return data?.url || null; }
-async function getCoverUrl(picId, source = 'netease', size = 300) {
-  if (!picId) return null;
-  try { const data = await apiFetch({ types: 'pic', source, id: picId, size }); return data?.url || null; } catch { return null; }
-}
+async function getPlayInfo(id, source = 'netease', br = 320) { const data = await apiFetch({ types: 'url', source, id, br }); return { url: data?.url || null, br: parseInt(data?.br, 10) || null }; }
+async function getCoverUrl(picId, source = 'netease', size = 300) { if (!picId) return null; try { const data = await apiFetch({ types: 'pic', source, id: picId, size }); return data?.url || null; } catch { return null; } }
+async function getLyric(id, source = 'netease') { try { const data = await apiFetch({ types: 'lyric', source, id }); return data?.lyric || data?.lrc || null; } catch { return null; } }
 
 /* ================= 播放流程 ================= */
-
 let consecutiveSkip = 0, failureSkipGuard = { key: '', at: 0 };
 
 function getNextIndex(direction = 1) {
@@ -741,9 +772,7 @@ function skipFailedTrack(reason = 'SKIP FAILED') {
   flashStatus(reason, 1200);
   const next = getNextIndex(1);
   if (next >= 0 && next !== currentIndex) {
-    loadTrack(next, { direction: 'next' }).then((ok) => {
-      if (ok) audio.play().catch(() => {});
-    });
+    loadTrack(next, { direction: 'next' }).then((ok) => { if (ok) audio.play().catch(() => {}); });
   } else {
     isPlaying = false; updatePlayIcon();
     try { audio.pause(); } catch (_) {}
@@ -757,11 +786,14 @@ async function loadTrack(index, opts = {}) {
   const loadToken = ++loadSeq;
   currentIndex = index;
   const track = tracks[index];
+  
+  if (!track.quality) track.quality = '320';
 
   titleEl.textContent = track.name;
   artistEl.textContent = track.artist || '未知艺术家';
   albumEl.textContent = track.album || '';
   document.title = track.name + ' · iPod';
+  updateQualityTag();
 
   const applyCover = () => {
     if (track.cover) { coverImg.src = track.cover; coverImg.classList.add('show'); coverBox.classList.add('has-cover'); }
@@ -770,19 +802,37 @@ async function loadTrack(index, opts = {}) {
   if (direction === 'prev' || direction === 'next') await animateCoverChange(applyCover, direction);
   else applyCover();
 
+  if (!track.lyricLines && track.lyricText) track.lyricLines = parseLrc(track.lyricText);
+  lastActiveIdx = -1; 
+  renderLyrics(track);
+
   renderLibrary(); renderPlaylist(); updateStatusHint();
 
   if (track.isOnline && !track.url) {
-    if (deferOnline) {
-      updateFavButton(); updateMediaSession();
-      return true;
-    }
+    if (deferOnline) { updateFavButton(); updateMediaSession(); return true; }
     titleEl.textContent = '正在获取…';
+    
+    const pUrl = getPlayInfo(track.id, track.source || 'netease', track.quality);
+    const pLyric = !track.lyricLines ? getLyric(track.id, track.source || 'netease') : Promise.resolve(null);
+    
     try {
-      const url = await getPlayUrl(track.id, track.source || 'netease', 320);
+      const [urlData, lrcText] = await Promise.all([pUrl, pLyric]);
       if (loadToken !== loadSeq) return false;
-      if (!url) throw new Error('无播放地址');
-      track.url = url;
+
+      if (lrcText) {
+        track.lyricText = lrcText;
+        track.lyricLines = parseLrc(lrcText);
+        lastActiveIdx = -1;
+        renderLyrics(track);
+      } else if (!track.lyricLines) {
+        renderLyrics(null);
+      }
+
+      if (!urlData.url) throw new Error('无播放地址');
+      track.url = urlData.url;
+      track.actualBr = urlData.br;
+      updateQualityTag();
+
       if (!track.cover && track.pic_id) {
         const pic = await getCoverUrl(track.pic_id, track.source || 'netease');
         if (loadToken !== loadSeq) return false;
@@ -790,21 +840,19 @@ async function loadTrack(index, opts = {}) {
       }
     } catch (err) {
       if (loadToken !== loadSeq) return false;
-      titleEl.textContent = '获取失败';
-      artistEl.textContent = err.message || '请换一首';
-      skipFailedTrack('SKIP BAD SOURCE');
-      return false;
+      titleEl.textContent = '获取失败'; artistEl.textContent = err.message || '请换一首';
+      skipFailedTrack('SKIP BAD SOURCE'); return false;
     }
     if (loadToken !== loadSeq) return false;
     titleEl.textContent = track.name;
+  } else if (!track.isOnline && !track.lyricLines) {
+    renderLyrics(null);
   }
 
   if (!track.url) return false;
-
   audio.src = track.url;
   audio.load();
-  pushHistory(track);
-  saveSettings();
+  pushHistory(track); saveSettings();
   updateFavButton(); updateMediaSession();
   return true;
 }
@@ -812,9 +860,7 @@ async function loadTrack(index, opts = {}) {
 function togglePlay() {
   if (tracks.length === 0) { openSheet(); return; }
   if (currentIndex === -1) {
-    loadTrack(isShuffle ? (shuffledOrder[0] || 0) : 0).then((ok) => {
-      if (ok) audio.play().catch(() => {});
-    });
+    loadTrack(isShuffle ? (shuffledOrder[0] || 0) : 0).then((ok) => { if (ok) audio.play().catch(() => {}); });
     return;
   }
   const track = tracks[currentIndex];
@@ -833,9 +879,7 @@ function prevTrack() {
   const next = getNextIndex(-1);
   if (next >= 0) {
     flashStatus('PREVIOUS TRACK');
-    loadTrack(next, { direction: 'prev' }).then((ok) => {
-      if (ok && isPlaying) audio.play().catch(() => {});
-    });
+    loadTrack(next, { direction: 'prev' }).then((ok) => { if (ok && isPlaying) audio.play().catch(() => {}); });
   }
 }
 
@@ -846,16 +890,13 @@ function nextTrack(auto = false) {
   if (next >= 0) {
     const isWrap = currentIndex === tracks.length - 1 && next === 0 && !auto;
     flashStatus(isWrap ? 'FIRST TRACK' : 'NEXT TRACK');
-    loadTrack(next, { direction: 'next' }).then((ok) => {
-      if (ok && isPlaying) audio.play().catch(() => {});
-    });
+    loadTrack(next, { direction: 'next' }).then((ok) => { if (ok && isPlaying) audio.play().catch(() => {}); });
   } else {
     isPlaying = false; updatePlayIcon(); audio.pause(); flashStatus('END OF PLAYLIST');
   }
 }
 
 /* ================= 列表渲染 & 交互 ================= */
-
 function renderPlaylist() {
   if (tracks.length === 0) { playlistEl.innerHTML = `<div class="empty-tip">还没有歌曲<br>点击下方添加本地音乐</div>`; return; }
   playlistEl.innerHTML = tracks.map((t, i) => `
@@ -958,9 +999,12 @@ searchResults.addEventListener('click', (e) => {
 function addOnlineTrack(item) {
   const artist = Array.isArray(item.artist) ? item.artist.join(' / ') : (item.artist || '未知艺术家');
   if (tracks.some(t => t.isOnline && t.id === item.id && t.source === item.source)) return;
+  
+  const selectedQuality = searchQualitySelect ? searchQualitySelect.value : '320';
+
   tracks.push({
     id: item.id, name: item.name, artist, album: item.album || '',
-    pic_id: item.pic_id, source: item.source,
+    pic_id: item.pic_id, source: item.source, quality: selectedQuality,
     isOnline: true, url: null, cover: null, duration: null
   });
   if (isShuffle) rebuildShuffle();
@@ -976,15 +1020,12 @@ async function removeTrackFromList(index, skipConfirm = false) {
   if (index < 0 || index >= tracks.length) return;
   const track = tracks[index];
   if (!skipConfirm && !confirm(`确定从播放列表中移除「${track.name}」吗？`)) return;
-  if (track.url && String(track.url).startsWith('blob:')) {
-    try { URL.revokeObjectURL(track.url); } catch (_) {}
-  }
+  if (track.url && String(track.url).startsWith('blob:')) { try { URL.revokeObjectURL(track.url); } catch (_) {} }
   tracks.splice(index, 1);
   if (tracks.length === 0) {
     currentIndex = -1; audio.pause(); audio.removeAttribute('src');
-    updatePlayIcon(); updateStatusHint();
-    document.title = 'iPod Music'; titleEl.textContent = '选择音乐';
-    artistEl.textContent = '点击 MENU 添加'; albumEl.textContent = '';
+    updatePlayIcon(); updateStatusHint(); updateQualityTag(); renderLyrics(null); lastActiveIdx = -1;
+    document.title = 'iPod Music'; titleEl.textContent = '选择音乐'; artistEl.textContent = '点击 MENU 添加'; albumEl.textContent = '';
     coverImg.classList.remove('show'); coverBox.classList.remove('has-cover');
     musicDot.classList.remove('playing'); centerLabel.classList.remove('is-playing');
   } else {
@@ -1012,11 +1053,15 @@ async function playOnlineTrack(item) {
 async function doSearch() {
   const keyword = searchInput.value.trim();
   if (!keyword) { searchStatus.textContent = '请输入关键词'; searchStatus.classList.add('error'); return; }
+  
+  if (searchQualitySelect) {
+    try { localStorage.setItem('ipodSearchQuality', searchQualitySelect.value); } catch(_) {}
+  }
+
   searchStatus.textContent = '搜索中…'; searchStatus.classList.remove('error');
   searchResults.innerHTML = `<div class="empty-tip">搜索中…</div>`;
   try {
     const data = await searchSongs(keyword, sourceSelect.value, 25, 1);
-    // 核心修复：强制给搜索结果补全 source，防止用户中途切换音源导致匹配错乱
     const list = (Array.isArray(data) ? data : []).map(item => {
       item.source = item.source || sourceSelect.value;
       return item;
@@ -1031,21 +1076,12 @@ async function doSearch() {
   }
 }
 
-function openSheet() { 
-  positionSheet(); 
-  sheetPanel.classList.add('show'); 
-}
-
+function openSheet() { positionSheet(); sheetPanel.classList.add('show'); }
 function closeSheetPanel() { 
   sheetPanel.classList.remove('show'); 
-  sheetPanel.style.height = '';
-  sheetPanel.style.top = '';
-  sheetPanel.style.bottom = '';
+  sheetPanel.style.height = ''; sheetPanel.style.top = ''; sheetPanel.style.bottom = '';
   sheetEl.style.removeProperty('--sheet-height');
-  
-  if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA')) {
-    document.activeElement.blur();
-  }
+  if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA')) document.activeElement.blur();
 }
 
 function switchTab(name) {
@@ -1061,7 +1097,6 @@ tabFav?.addEventListener('click', () => switchTab('fav'));
 tabOnline.addEventListener('click', () => switchTab('online'));
 
 /* ================= 事件绑定 ================= */
-
 favBtn?.addEventListener('click', toggleFavorite);
 document.getElementById('playAllFavBtn')?.addEventListener('click', () => { haptic(12); playAllFavorites(); });
 clearDataBtn?.addEventListener('click', clearAllPlayData);
@@ -1089,22 +1124,16 @@ sheetSizeBtn?.addEventListener('click', () => { sheetFullscreen = !sheetFullscre
 sheetBgBtn?.addEventListener('click', () => { sheetTransparent = !sheetTransparent; try { localStorage.setItem('ipodSheetTransparent', String(sheetTransparent)); } catch (_) {} applySheetPrefs(); haptic(10); });
 
 sheetPanel.addEventListener('click', (e) => { if (e.target === sheetPanel) closeSheetPanel(); });
-
 searchBtn.addEventListener('click', doSearch);
 searchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
 
 const sourceCheckBtn = document.getElementById('sourceCheckBtn');
 if (sourceCheckBtn) { sourceCheckBtn.addEventListener('click', (e) => { e.stopPropagation(); checkAllSources(); }); }
 
-window.addEventListener('resize', () => {
-  if (sheetPanel.classList.contains('show')) positionSheet();
-});
-window.addEventListener('orientationchange', () => {
-  if (sheetPanel.classList.contains('show')) setTimeout(positionSheet, 200);
-});
+window.addEventListener('resize', () => { if (sheetPanel.classList.contains('show')) positionSheet(); });
+window.addEventListener('orientationchange', () => { if (sheetPanel.classList.contains('show')) setTimeout(positionSheet, 200); });
 
 /* ================= 进度条拖拽 ================= */
-
 let isDragging = false;
 progressBar.addEventListener('touchstart', startDrag, { passive: false });
 progressBar.addEventListener('mousedown', startDrag);
@@ -1122,6 +1151,7 @@ function updateProgressFromEvent(e) {
   percent = Math.max(0, Math.min(1, percent));
   setProgressPct(percent * 100);
   if (audio.duration) audio.currentTime = percent * audio.duration;
+  updateLyrics(audio.currentTime);
 }
 document.addEventListener('touchmove', (e) => { if (isDragging) { updateProgressFromEvent(e); e.preventDefault(); } }, { passive: false });
 document.addEventListener('mousemove', (e) => { if (isDragging) updateProgressFromEvent(e); });
@@ -1129,7 +1159,6 @@ document.addEventListener('touchend', () => { isDragging = false; });
 document.addEventListener('mouseup', () => { isDragging = false; });
 
 /* ================= 轮盘调进度 ================= */
-
 let isScrubbing = false, lastAngle = 0, scrubStartTime = 0, wheelCx = 0, wheelCy = 0, rInner = 0, rOuter = 0;
 const wheelScrub = document.getElementById('wheelScrub');
 
@@ -1171,6 +1200,7 @@ function onWheelMove(e) {
   scrubStartTime = newTime; lastAngle = angle; audio.currentTime = newTime;
   setProgressPct((newTime / audio.duration) * 100);
   currentTimeEl.textContent = formatTime(newTime); e.preventDefault();
+  updateLyrics(newTime);
 }
 
 function onWheelEnd() { isScrubbing = false; }
@@ -1186,7 +1216,6 @@ document.addEventListener('touchend', onWheelEnd);
 document.addEventListener('mouseup', onWheelEnd);
 
 /* ================= audio 事件 ================= */
-
 audio.addEventListener('play', () => { consecutiveSkip = 0; isPlaying = true; updatePlayIcon(); });
 audio.addEventListener('pause', () => { isPlaying = false; updatePlayIcon(); });
 audio.addEventListener('ended', () => { if (repeatMode === 2) { audio.currentTime = 0; audio.play().catch(() => {}); } else nextTrack(true); });
@@ -1201,6 +1230,7 @@ audio.addEventListener('timeupdate', () => {
     const pct = (audio.currentTime / audio.duration) * 100;
     setProgressPct(pct);
     currentTimeEl.textContent = formatTime(audio.currentTime);
+    updateLyrics(audio.currentTime);
   });
 });
 
@@ -1219,14 +1249,13 @@ audio.addEventListener('error', () => {
 });
 
 /* ================= 本地文件导入 ================= */
-
 fileInput.addEventListener('change', async (e) => {
   const files = Array.from(e.target.files);
   if (files.length === 0) return;
   for (const file of files) {
     const url = URL.createObjectURL(file);
     const name = file.name.replace(/\.[^/.]+$/, '');
-    const trackObj = { name, artist: '本地音乐', album: '', url, duration: null, cover: null, isOnline: false, blob: file };
+    const trackObj = { name, artist: '本地音乐', album: '', url, duration: null, cover: null, isOnline: false, blob: file, quality: '320' };
     await readMetadata(file, trackObj);
     tracks.push(trackObj);
   }
@@ -1243,8 +1272,7 @@ function shrinkCover(dataUrl, max = 300) {
       try {
         const s = Math.min(1, max / Math.max(img.width, img.height));
         const c = document.createElement('canvas');
-        c.width = Math.round(img.width * s);
-        c.height = Math.round(img.height * s);
+        c.width = Math.round(img.width * s); c.height = Math.round(img.height * s);
         c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
         resolve(c.toDataURL('image/jpeg', 0.82));
       } catch (_) { resolve(dataUrl); }
@@ -1263,18 +1291,19 @@ function readMetadata(file, trackObj) {
         if (tags.title) trackObj.name = tags.title;
         if (tags.artist) trackObj.artist = tags.artist;
         if (tags.album) trackObj.album = tags.album;
+        if (tags.lyrics) {
+           trackObj.lyricText = tags.lyrics.lyrics || tags.lyrics;
+           trackObj.lyricLines = parseLrc(trackObj.lyricText);
+        }
         if (tags.picture) {
           try {
             const { data, format } = tags.picture;
-            const CHUNK = 0x8000;
-            let binary = '';
+            const CHUNK = 0x8000; let binary = '';
             for (let i = 0; i < data.length; i += CHUNK) binary += String.fromCharCode.apply(null, data.subarray(i, i + CHUNK));
             const rawUrl = `data:${format};base64,${window.btoa(binary)}`;
             shrinkCover(rawUrl, 300).then((cover) => { trackObj.cover = cover; resolve(); });
           } catch (_) { resolve(); }
-        } else {
-          resolve();
-        }
+        } else { resolve(); }
       },
       onError: () => resolve()
     });
@@ -1285,7 +1314,6 @@ document.addEventListener('contextmenu', (e) => { if (e.target.closest('input, t
 document.addEventListener('selectstart', (e) => { if (e.target.closest('input, textarea, select')) return; e.preventDefault(); });
 
 /* ================= 启动 ================= */
-
 const coverAnimSelect = document.getElementById('coverAnimSelect');
 if (coverAnimSelect) {
   coverAnimSelect.value = coverAnimMode;
@@ -1306,7 +1334,12 @@ async function bootstrap() {
   }
   updatePlayIcon(); updateModeIcons(); updateScrubToggle(); updateFavButton(); updateStatusHint(); applyCoverAnimClass(); applySheetPrefs();
   renderPlaylist(); renderLibrary(); renderFavList();
-  if (currentIndex >= 0 && tracks[currentIndex]) await loadTrack(currentIndex, { deferOnline: true });
+  
+  if (currentIndex >= 0 && tracks[currentIndex]) {
+    await loadTrack(currentIndex, { deferOnline: true });
+  } else {
+    renderLyrics(null);
+  }
 }
 
 bootstrap();
